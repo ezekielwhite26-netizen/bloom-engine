@@ -9,6 +9,7 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from bloom_engine.api.contracts import AmaRequestBuilder
 from bloom_engine.api.models import CapabilityView, RuntimePreviewBody
+from bloom_engine.api.observability import correlation_middleware
 from bloom_engine.runtime.models import SceneRequest
 from bloom_engine.runtime.runner import RuntimeRunner
 
@@ -35,11 +36,12 @@ def _assert_preview_only(request: SceneRequest) -> None:
 
 
 def create_app(*, services: AmaApiServices, bearer_token: str) -> FastAPI:
-    """Create the first hosted boundary for Ama.
+    """Create the hosted boundary for Ama.
 
-    v0.1 is intentionally read/preview only. It does not expose raw sovereign
-    resolver calls and it does not expose any persistence endpoint. Authorization
-    for future writes must be minted by a non-model server-side policy layer.
+    This branch remains read/preview only. It does not expose raw sovereign
+    resolver calls and it does not expose persistence. Request correlation logs
+    only method/path/status/request ID; auth headers and request bodies are never
+    logged by BLOOM's access middleware.
     """
 
     if len(bearer_token) < 24:
@@ -53,6 +55,7 @@ def create_app(*, services: AmaApiServices, bearer_token: str) -> FastAPI:
             "write authority remain server-side."
         ),
     )
+    app.middleware("http")(correlation_middleware)
     bearer = HTTPBearer(auto_error=False)
 
     def require_auth(
