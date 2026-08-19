@@ -7,10 +7,16 @@ name = "bloom-engine"
 version = "0.1.0"
 description = "Headless BLOOM cognitive runtime and Ama backend"
 requires-python = ">=3.11"
-dependencies = []
+dependencies = [
+  "fastapi>=0.115,<1",
+  "uvicorn>=0.30,<1",
+]
 
 [project.optional-dependencies]
-dev = ["pytest>=8.0"]
+dev = [
+  "pytest>=8.0",
+  "httpx>=0.28,<1",
+]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
