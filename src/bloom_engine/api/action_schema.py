@@ -11,7 +11,7 @@ ACTION_OPERATION_IDS = {
     ("/v1/capabilities", "get"): "getBloomCapabilities",
     ("/v1/runtime/preview", "post"): "previewBloomRuntime",
 }
-FORBIDDEN_TOKENS = (
+FORBIDDEN_CLIENT_INPUT_TOKENS = (
     "authorization_token",
     "capability_token",
     "evidence",
@@ -19,6 +19,7 @@ FORBIDDEN_TOKENS = (
     "persistence",
     "commit",
     "write",
+    "resolution",
 )
 
 
@@ -35,8 +36,8 @@ def build_custom_gpt_action_schema(app: FastAPI, *, server_url: str) -> dict:
 
     The hosted FastAPI app may contain operational endpoints such as /health.
     This exporter whitelists only the reviewed read/preview action surface and
-    refuses to publish a schema if forbidden authority-bearing terms appear in
-    the exposed request contract.
+    refuses to publish a schema if authority-bearing terms appear in the
+    external preview input model.
     """
 
     _assert_https_server(server_url)
@@ -76,23 +77,20 @@ def build_custom_gpt_action_schema(app: FastAPI, *, server_url: str) -> dict:
         "components": deepcopy(source.get("components", {})),
     }
 
-    rendered = repr(schema).lower()
-    for token in FORBIDDEN_TOKENS:
-        if token in rendered:
-            # persistence appears in the capability response by design, but it
-            # must never appear as an input field or route. Inspect request-only
-            # structures separately below instead of allowing it wholesale.
-            if token == "persistence":
-                continue
-            raise RuntimeError(f"forbidden authority-bearing token exposed in Action schema: {token}")
-
-    preview = schema["paths"]["/v1/runtime/preview"]["post"]
-    request_body = repr(preview.get("requestBody", {})).lower()
-    for token in FORBIDDEN_TOKENS:
-        if token in request_body:
-            raise RuntimeError(f"forbidden client input exposed in preview request schema: {token}")
-
     if any("commit" in path.lower() or "write" in path.lower() for path in schema["paths"]):
         raise RuntimeError("write-like path leaked into Custom GPT Action schema")
+
+    preview_model = (
+        schema.get("components", {})
+        .get("schemas", {})
+        .get("RuntimePreviewBody", {})
+    )
+    if not preview_model:
+        raise RuntimeError("RuntimePreviewBody schema missing from Action contract")
+
+    rendered_input = repr(preview_model).lower()
+    for token in FORBIDDEN_CLIENT_INPUT_TOKENS:
+        if token in rendered_input:
+            raise RuntimeError(f"forbidden client input exposed in preview schema: {token}")
 
     return schema
