@@ -1,0 +1,54 @@
+name: Ama Hosted Acceptance
+
+on:
+  push:
+    branches: ["ama-api-v0.1"]
+  workflow_dispatch:
+
+jobs:
+  hosted-acceptance:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Verify health endpoint
+        run: |
+          set -euo pipefail
+          for i in {1..12}; do
+            if curl -fsS --max-time 20 https://ama-runtime.onrender.com/health -o /tmp/health.json; then
+              break
+            fi
+            sleep 10
+          done
+          python - <<'PY'
+          import json
+          p=json.load(open('/tmp/health.json'))
+          assert p['status']=='ok', p
+          assert p['service']=='ama-runtime', p
+          assert p['persistence_enabled'] is False, p
+          print(p)
+          PY
+
+      - name: Verify preview-only transport
+        run: |
+          set -euo pipefail
+          curl -fsS --max-time 30 \
+            -H 'content-type: application/json' \
+            -d '{"command":"continue Episode 7","mode":"PREVIEW"}' \
+            https://ama-runtime.onrender.com/v1/run -o /tmp/run.json
+          python - <<'PY'
+          import json
+          p=json.load(open('/tmp/run.json'))
+          assert p['status']=='READY_FOR_RUNTIME_WIRING', p
+          assert p['mode']=='PREVIEW', p
+          assert p['persistence_authorized'] is False, p
+          print(p)
+          PY
+
+      - name: Verify commit gate remains closed
+        run: |
+          set -euo pipefail
+          code=$(curl -sS -o /tmp/commit.json -w '%{http_code}' --max-time 30 \
+            -H 'content-type: application/json' \
+            -d '{"transaction_key":"HOSTED-ACCEPTANCE-NOOP","capability_token":"AMA-CAP::acceptance"}' \
+            https://ama-runtime.onrender.com/v1/commit)
+          test "$code" = "401"
+          cat /tmp/commit.json
