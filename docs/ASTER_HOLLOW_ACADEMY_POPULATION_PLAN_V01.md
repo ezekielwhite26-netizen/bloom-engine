@@ -11,14 +11,15 @@ Current supported anchors:
 - Aster Hollow Academy is an ordinary public secondary school and a major ordinary-life arena.
 - The current Academy belongs in the later cross-river Education District; legacy Academy Hill placement is superseded.
 - Florence and the focal teens begin Season One as juniors unless a specific character file says otherwise.
+- Current live/runtime chronology is the Florence 2009–2010 continuity. Older source text that embeds 2026 dates is not used to overwrite the runtime chronology.
 - Sebastian "Seb" MacKellar is 16, a same-age Hearth cousin with his own friends/school life, and is not automatically one of the focal Eight.
 - Nathaniel "Nate" Brooks is a school guidance/student-support counselor.
 - The Ashcombe Science Center exists as an Academy science facility.
-- The school year is underway in 2009 continuity, but current authority does not justify exact school hours, class periods, homework, or individual student timetables yet.
+- The 2009–10 school year is underway, but current authority does not justify exact school hours, class periods, homework, or individual student timetables yet.
 - Florence's current user-approved ordinary-life direction includes a strong love of fashion/styling/material craft without treating it as a chosen career.
 - Florence leading the Student Council events/planning function is current user direction from this development session; it remains pending formal canon persistence until the relevant EUNOMIA/THEMIS/CLIO path is executed.
 
-Do not import the superseded legacy Academy Hill campus, old founding-family names, or legacy student cast from older compendia merely because they appear in historical source files.
+Do not import the superseded legacy Academy Hill campus, old founding-family names, old 2026 chronology, or legacy student cast from older compendia merely because they appear in historical source files.
 
 ## Existing recurring junior seed
 
