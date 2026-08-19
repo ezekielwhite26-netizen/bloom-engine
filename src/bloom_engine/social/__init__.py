@@ -15,6 +15,12 @@ from bloom_engine.social.models import (
     RelationshipStatus,
 )
 from bloom_engine.social.encounters import evaluate_encounter_channel
+from bloom_engine.social.identity_policy import (
+    SupportingNpcAssessment,
+    SupportingNpcDecision,
+    SupportingNpcIdentityPolicy,
+    SupportingNpcIdentityProposal,
+)
 
 __all__ = [
     "EncounterChannel",
@@ -25,4 +31,8 @@ __all__ = [
     "RelationshipEdge",
     "RelationshipStatus",
     "evaluate_encounter_channel",
+    "SupportingNpcAssessment",
+    "SupportingNpcDecision",
+    "SupportingNpcIdentityPolicy",
+    "SupportingNpcIdentityProposal",
 ]
