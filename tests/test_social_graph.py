@@ -69,3 +69,35 @@ def test_not_applicable_is_not_positive_evidence():
         EncounterEvidence("HERA", "relationship.familiarity.peer", EncounterEvidenceState.NOT_APPLICABLE),
     )
     assert evaluate_encounter_channel(_channel(), evidence) is EncounterDecision.UNKNOWN
+
+
+def test_shared_junior_cohort_without_resolved_overlap_does_not_spawn_peer():
+    channel = EncounterChannel(
+        channel_key="AH-TEST-JUNIOR-COHORT-001",
+        focal_ref="BLM-CHR-000001",
+        other_ref="PLANNING-JUNIOR-PEER",
+        kind=EncounterChannelKind.SCHOOL_COHORT,
+        recurring=True,
+    )
+    evidence = (
+        EncounterEvidence("EUNOMIA", "institution.academy.junior_cohort", EncounterEvidenceState.KNOWN_TRUE),
+        EncounterEvidence("CHRONOS", "schedule.shared_window", EncounterEvidenceState.UNKNOWN),
+        EncounterEvidence("ATLAS", "location.academy.same_site", EncounterEvidenceState.KNOWN_TRUE),
+    )
+    assert evaluate_encounter_channel(channel, evidence) is EncounterDecision.UNKNOWN
+
+
+def test_events_membership_without_confirmed_meeting_time_does_not_spawn_peer():
+    channel = EncounterChannel(
+        channel_key="AH-TEST-EVENTS-001",
+        focal_ref="BLM-CHR-000001",
+        other_ref="PLANNING-EVENTS-PEER",
+        kind=EncounterChannelKind.STUDENT_ACTIVITY,
+        recurring=True,
+    )
+    evidence = (
+        EncounterEvidence("EUNOMIA", "organization.student_council.events_membership", EncounterEvidenceState.KNOWN_TRUE),
+        EncounterEvidence("CHRONOS", "schedule.events_committee.overlap", EncounterEvidenceState.UNKNOWN),
+        EncounterEvidence("ATLAS", "location.academy.reachable", EncounterEvidenceState.KNOWN_TRUE),
+    )
+    assert evaluate_encounter_channel(channel, evidence) is EncounterDecision.UNKNOWN
