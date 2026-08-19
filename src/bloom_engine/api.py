@@ -1,13 +1,39 @@
 from __future__ import annotations
 
+import logging
 import os
-from dataclasses import asdict
+from contextlib import asynccontextmanager
 from typing import Any
 
 from fastapi import FastAPI, Header, HTTPException
 from pydantic import BaseModel, Field
 
-app = FastAPI(title="Ama Runtime API", version="0.1.0")
+from bloom_engine.hosted_acceptance import AirtableHTTP, run_hosted_dry_run
+
+logger = logging.getLogger("bloom_engine.ama_api")
+
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    if os.getenv("AMA_HOSTED_ACCEPTANCE", "false").lower() == "true":
+        token = os.getenv("AIRTABLE_PAT")
+        base_id = os.getenv("BLOOM_AIRTABLE_BASE_ID", "appNhl43NzKfbsTAw")
+        if not token:
+            logger.warning("HOSTED_DRY_RUN_SKIPPED AIRTABLE_PAT missing")
+        else:
+            try:
+                result = run_hosted_dry_run(
+                    AirtableHTTP(base_id=base_id, token=token),
+                    attempt_label="Render hosted acceptance — 2026-08-19",
+                )
+            except Exception:
+                logger.exception("HOSTED_DRY_RUN_FAIL")
+            else:
+                logger.info("HOSTED_DRY_RUN_PASS %s", result)
+    yield
+
+
+app = FastAPI(title="Ama Runtime API", version="0.1.1", lifespan=lifespan)
 
 
 class RunRequest(BaseModel):
@@ -26,8 +52,10 @@ def health() -> dict[str, Any]:
     return {
         "status": "ok",
         "service": "ama-runtime",
-        "version": "0.1.0",
+        "version": "0.1.1",
         "persistence_enabled": os.getenv("AMA_PERSISTENCE_ENABLED", "false").lower() == "true",
+        "airtable_configured": bool(os.getenv("AIRTABLE_PAT")),
+        "hosted_acceptance_enabled": os.getenv("AMA_HOSTED_ACCEPTANCE", "false").lower() == "true",
     }
 
 
