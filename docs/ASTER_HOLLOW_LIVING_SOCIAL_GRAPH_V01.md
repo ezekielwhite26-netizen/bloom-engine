@@ -113,6 +113,8 @@ Suggested initial targets:
 - Henry peer set: Bea as established; Anya as supported candidate; approximately 8-12 additional recurring peers generated only after structural roles/constraints are identified.
 - Hollow Circle living set: a bounded cross-generational recurring cast rather than every magical resident in town.
 
+The first canon-checked Academy population-gap map now lives in `docs/ASTER_HOLLOW_ACADEMY_POPULATION_PLAN_V01.md`. It seeds existing recurring names, identifies the Student Council / classroom / arts / athletics / friction / connector roles still missing, and deliberately leaves exact teachers and timetables unresolved until their sovereign constraints exist.
+
 ## Stable identity rule
 
 Production graph rows must use THEMIS-resolved stable character/entity IDs. Do not invent BLM IDs in fixtures or docs. Names may be used in planning notes until exact stable identity is resolved.
