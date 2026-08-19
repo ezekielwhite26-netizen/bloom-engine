@@ -40,17 +40,28 @@ def test_action_schema_exposes_only_reviewed_read_preview_surface():
 def test_action_schema_keeps_write_authority_out_of_preview_input_model():
     schema = build_custom_gpt_action_schema(app(), server_url="https://ama.example.test")
     preview = schema["components"]["schemas"]["RuntimePreviewBody"]
-    rendered = repr(preview).lower()
-    for forbidden in (
-        "authorization_token",
-        "capability_token",
-        "evidence",
-        "permission_mode",
-        "commit",
-        "write",
-        "resolution",
-    ):
-        assert forbidden not in rendered
+    properties = set(preview["properties"])
+    assert properties == {
+        "arc",
+        "command",
+        "mode",
+        "requested_actor_ref",
+        "requested_target_location_ref",
+        "requested_object_ref",
+        "visual_requested",
+    }
+    assert properties.isdisjoint(
+        {
+            "authorization_token",
+            "capability_token",
+            "evidence",
+            "permission_mode",
+            "commit",
+            "write",
+            "resolution",
+            "queries",
+        }
+    )
 
 
 def test_action_schema_requires_https_and_rejects_embedded_credentials():
