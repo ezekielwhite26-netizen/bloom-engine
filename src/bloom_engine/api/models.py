@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class RuntimePreviewBody(BaseModel):
@@ -14,6 +14,8 @@ class RuntimePreviewBody(BaseModel):
     translation boundary.
     """
 
+    model_config = ConfigDict(extra="forbid")
+
     arc: str = Field(min_length=1)
     command: str = Field(min_length=1)
     mode: Literal["DRY_RUN", "LIVE_PLAY"] = "DRY_RUN"
@@ -24,6 +26,8 @@ class RuntimePreviewBody(BaseModel):
 
 
 class CapabilityView(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     api_version: str
     runtime_preview: bool
     runtime_commit: bool
