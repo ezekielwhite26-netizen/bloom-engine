@@ -11,15 +11,18 @@ ACTION_OPERATION_IDS = {
     ("/v1/capabilities", "get"): "getBloomCapabilities",
     ("/v1/runtime/preview", "post"): "previewBloomRuntime",
 }
-FORBIDDEN_CLIENT_INPUT_TOKENS = (
-    "authorization_token",
-    "capability_token",
-    "evidence",
-    "permission_mode",
-    "persistence",
-    "commit",
-    "write",
-    "resolution",
+FORBIDDEN_CLIENT_INPUT_FIELDS = frozenset(
+    {
+        "authorization_token",
+        "capability_token",
+        "evidence",
+        "permission_mode",
+        "persistence",
+        "commit",
+        "write",
+        "resolution",
+        "queries",
+    }
 )
 
 
@@ -36,8 +39,8 @@ def build_custom_gpt_action_schema(app: FastAPI, *, server_url: str) -> dict:
 
     The hosted FastAPI app may contain operational endpoints such as /health.
     This exporter whitelists only the reviewed read/preview action surface and
-    refuses to publish a schema if authority-bearing terms appear in the
-    external preview input model.
+    refuses to publish a schema if authority-bearing client fields appear in
+    the external preview model.
     """
 
     _assert_https_server(server_url)
@@ -88,9 +91,9 @@ def build_custom_gpt_action_schema(app: FastAPI, *, server_url: str) -> dict:
     if not preview_model:
         raise RuntimeError("RuntimePreviewBody schema missing from Action contract")
 
-    rendered_input = repr(preview_model).lower()
-    for token in FORBIDDEN_CLIENT_INPUT_TOKENS:
-        if token in rendered_input:
-            raise RuntimeError(f"forbidden client input exposed in preview schema: {token}")
+    properties = set(preview_model.get("properties", {}))
+    forbidden = sorted(properties.intersection(FORBIDDEN_CLIENT_INPUT_FIELDS))
+    if forbidden:
+        raise RuntimeError(f"forbidden client input fields exposed in preview schema: {forbidden}")
 
     return schema
