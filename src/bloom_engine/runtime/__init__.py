@@ -16,6 +16,9 @@ from bloom_engine.runtime.models import (
     SceneRequest,
 )
 from bloom_engine.runtime.runner import RunnerDeps, RuntimeRunner
+from bloom_engine.runtime.manuscript_identity import install_alias_aware_manuscript_repository
+
+install_alias_aware_manuscript_repository()
 
 __all__ = [
     "AthenaDecision",
