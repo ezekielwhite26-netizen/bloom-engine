@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import hashlib
 import os
+import unicodedata
 import uuid
+from hmac import compare_digest
 from typing import Any
 
-from fastapi import APIRouter, BackgroundTasks, HTTPException
+from fastapi import APIRouter, BackgroundTasks, Header, HTTPException
 from pydantic import BaseModel, ConfigDict, Field
 
 from bloom_engine.apollo.authority import AirtableVisualAuthoritySource, AirtableVisualHTTP, ApolloVisualAuthorityCompiler
@@ -13,6 +16,7 @@ from bloom_engine.apollo.gpt_image import OpenAIGPTImage2Transport
 from bloom_engine.apollo.job_store import AirtableVisualJobStore, VisualJobStore
 from bloom_engine.apollo.models import VisualJobRequest, VisualRequestKind, VisualSubjectKind
 from bloom_engine.apollo.providers import Flux2ProRenderer, GPTImage2Renderer, OpenAIVisualCritic
+from bloom_engine.apollo.reference_ingest import AirtableReferenceAttachmentIngestor
 from bloom_engine.apollo.storage import AirtableVisualAssetStore
 
 router = APIRouter(prefix="/v1/visual", tags=["APOLLO Visual Director"])
@@ -28,9 +32,6 @@ class VisualPlanBody(BaseModel):
     request_kind: VisualRequestKind = VisualRequestKind.PRODUCTION_PACK
     output_type: str | None = None
     max_iterations: int = Field(default=5, ge=1, le=6)
-    # Conservative default: approximately one paid renderer call per slot for a
-    # full character pack. Higher repair budgets must be present in the current
-    # request and are still capped by the Director's absolute ceiling.
     max_renderer_calls: int = Field(default=12, ge=1, le=60)
 
 
@@ -38,6 +39,16 @@ class VisualGenerateBody(VisualPlanBody):
     # This must be true in the current request. A previous chat decision, project
     # preference, or model inference may not silently authorize paid generation.
     confirm_spend: bool = False
+
+
+class VisualReferenceIngestBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    asset_key: str = Field(min_length=1, max_length=200)
+    filename: str = Field(min_length=1, max_length=255)
+    mime_type: str = Field(min_length=1, max_length=100)
+    image_base64: str = Field(min_length=1)
+    expected_sha256: str | None = Field(default=None, pattern=r"^[A-Fa-f0-9]{64}$")
 
 
 def _env(name: str) -> str:
@@ -60,6 +71,42 @@ def _compiler() -> ApolloVisualAuthorityCompiler:
 def _job_store() -> VisualJobStore:
     base_id, token = _airtable_config()
     return AirtableVisualJobStore(base_id=base_id, token=token)
+
+
+def _reference_ingestor() -> AirtableReferenceAttachmentIngestor:
+    base_id, token = _airtable_config()
+    return AirtableReferenceAttachmentIngestor(base_id=base_id, token=token)
+
+
+def _normalize_secret(value: str | None) -> str:
+    if not value:
+        return ""
+    normalized = unicodedata.normalize("NFKC", value)
+    return "".join(
+        ch for ch in normalized
+        if not ch.isspace() and unicodedata.category(ch) != "Cf"
+    )
+
+
+def _require_reference_ingest_admin(
+    token: str | None = Header(default=None, alias="X-BLOOM-APOLLO-ADMIN"),
+) -> None:
+    """Require a separate operator secret for reference-byte ingestion.
+
+    The normal Ama bearer is intentionally insufficient. This keeps the user-
+    facing visual Action capable of planning/generation without silently gaining
+    permission to alter the durable reference library.
+    """
+
+    configured_hash = (os.getenv("BLOOM_APOLLO_ADMIN_TOKEN_SHA256") or "").strip().lower()
+    if not configured_hash:
+        raise HTTPException(status_code=503, detail="APOLLO reference ingestion is not configured")
+    received = _normalize_secret(token)
+    if not received:
+        raise HTTPException(status_code=401, detail="Missing APOLLO admin credentials")
+    received_hash = hashlib.sha256(received.encode("utf-8")).hexdigest()
+    if not compare_digest(received_hash, configured_hash):
+        raise HTTPException(status_code=401, detail="Invalid APOLLO admin credentials")
 
 
 def _request(body: VisualPlanBody, authorization_token: str | None = None) -> VisualJobRequest:
@@ -145,10 +192,13 @@ def visual_capabilities() -> dict[str, Any]:
     airtable = bool(os.getenv("AIRTABLE_PAT"))
     flux = bool(os.getenv("BFL_API_KEY"))
     openai = bool(os.getenv("OPENAI_API_KEY"))
+    admin_ingest = bool((os.getenv("BLOOM_APOLLO_ADMIN_TOKEN_SHA256") or "").strip())
     return {
         "visual_plan": airtable,
+        "visual_readiness": airtable,
         "visual_generate_endpoint": True,
         "visual_generate_configured": airtable and flux and openai,
+        "reference_ingest_admin_configured": airtable and admin_ingest,
         "durable_job_registry": airtable,
         "candidate_storage": "BLOOM Visual Assets" if airtable else None,
         "primary_renderer": "flux-2-pro",
@@ -163,6 +213,54 @@ def visual_capabilities() -> dict[str, Any]:
         "automatic_gold_promotion": False,
         "automatic_paid_retry_after_host_restart": False,
         "live_deployment_claimed": False,
+    }
+
+
+@router.post("/readiness")
+def visual_readiness(body: VisualPlanBody) -> dict[str, Any]:
+    """Explain authority-vs-byte readiness without generating or spending."""
+
+    try:
+        compiler = _compiler()
+        subject = compiler.source.resolve_subject(body.subject_query, body.subject_kind, body.arc)
+        if subject is None:
+            raise ValueError(f"VISUAL_SUBJECT_NOT_RESOLVED:{body.subject_query}")
+        refs = compiler.source.list_references(subject, body.arc)
+        plan = compiler.compile(_request(body))
+    except (RuntimeError, ValueError) as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    roles_present = sorted({ref.role for ref in refs})
+    roles_with_bytes = sorted({ref.role for ref in refs if ref.has_image})
+    roles_missing_bytes = sorted({ref.role for ref in refs if not ref.has_image})
+    ready_jobs = [job.output_type for job in plan.jobs if job.ready]
+    blocked_jobs = [
+        {"output_type": job.output_type, "missing_dependencies": list(job.missing_dependencies)}
+        for job in plan.jobs if not job.ready
+    ]
+    return {
+        "subject_id": subject.stable_id,
+        "subject_name": subject.display_name,
+        "authority_metadata_present": bool(refs),
+        "authority_roles_present": roles_present,
+        "authority_roles_with_image_bytes": roles_with_bytes,
+        "authority_roles_missing_image_bytes": roles_missing_bytes,
+        "reference_records": [
+            {
+                "asset_key": ref.asset_key,
+                "role": ref.role,
+                "status": ref.status,
+                "reference_strength": ref.reference_strength,
+                "has_image": ref.has_image,
+            }
+            for ref in refs
+        ],
+        "ready_jobs": ready_jobs,
+        "blocked_jobs": blocked_jobs,
+        "ready_for_any_generation": bool(ready_jobs),
+        "ready_for_full_requested_pack": bool(plan.jobs) and not blocked_jobs,
+        "spent": False,
+        "renderer_invoked": False,
     }
 
 
@@ -255,3 +353,39 @@ def visual_job_status(job_id: str) -> dict[str, Any]:
         "recovery_required": state.recovery_required,
         "requires_human_approval": True,
     }
+
+
+@router.post("/admin/ingest-reference", include_in_schema=False)
+def visual_admin_ingest_reference(
+    body: VisualReferenceIngestBody,
+    _admin: None = _require_reference_ingest_admin,
+) -> dict[str, Any]:
+    """Operator-only reference-byte ingestion; never changes authority metadata."""
+
+    # FastAPI dependency injection cannot be expressed by assigning the function
+    # object as a plain default, so call it explicitly only when tests invoke the
+    # handler directly. HTTP mounting uses the wrapper route defined below.
+    raise RuntimeError("DIRECT_HANDLER_NOT_EXPOSED")
+
+
+@router.post("/admin/reference-attachment", include_in_schema=False)
+def visual_admin_reference_attachment(
+    body: VisualReferenceIngestBody,
+    x_bloom_apollo_admin: str | None = Header(default=None, alias="X-BLOOM-APOLLO-ADMIN"),
+) -> dict[str, Any]:
+    _require_reference_ingest_admin(x_bloom_apollo_admin)
+    try:
+        result = _reference_ingestor().ingest(
+            asset_key=body.asset_key,
+            filename=body.filename,
+            mime_type=body.mime_type,
+            image_base64=body.image_base64,
+            expected_sha256=body.expected_sha256,
+        )
+    except PermissionError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    return result.to_public_dict()
