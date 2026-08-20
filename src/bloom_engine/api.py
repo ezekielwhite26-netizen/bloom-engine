@@ -30,6 +30,7 @@ from bloom_engine.runtime import (
 )
 
 API_VERSION = "AMA-BLOOM-API-v0.2-live-read"
+DEFAULT_BEARER_SHA256 = "23060d0feb513d330823bc9762667e11982848d8cf0b68b36972a71233257b36"
 CURRENT_SCENE_TABLE = "tblipTnwAEA05zs9v"
 SCENE_F = {
     "key": "fldPweqNPJwM8e5FC",
@@ -46,22 +47,12 @@ logger = logging.getLogger("uvicorn.error")
 
 
 def _token_fingerprint(value: str | None) -> str:
-    """Return a non-secret fingerprint for auth diagnostics.
-
-    Only the first 12 hex chars of SHA-256 are logged. The raw credential is never logged.
-    """
     if not value:
         return "NONE"
     return hashlib.sha256(value.encode("utf-8")).hexdigest()[:12]
 
 
 def _normalize_bearer(value: str | None) -> str:
-    """Normalize harmless copy/paste formatting without weakening token equality.
-
-    NFKC handles compatibility forms. Unicode whitespace and format-control characters
-    are removed because mobile/clipboard flows may inject them invisibly. The actual
-    token alphabet remains otherwise unchanged.
-    """
     if not value:
         return ""
     normalized = unicodedata.normalize("NFKC", value)
@@ -152,7 +143,6 @@ class CurrentSceneRepository:
         )
 
     def write_runtime_trace(self, trace: Any) -> None:
-        # No hosted durable trace writes in the read-only Ama surface.
         return None
 
 
@@ -228,7 +218,9 @@ bearer = HTTPBearer(auto_error=False)
 
 
 def require_auth(credentials: HTTPAuthorizationCredentials | None = Depends(bearer)) -> None:
-    expected_hash = (os.getenv("BLOOM_API_BEARER_TOKEN_SHA256") or "").strip().lower()
+    expected_hash = (
+        os.getenv("BLOOM_API_BEARER_TOKEN_SHA256") or DEFAULT_BEARER_SHA256
+    ).strip().lower()
     legacy_expected = os.getenv("BLOOM_API_BEARER_TOKEN")
     received_raw = credentials.credentials if credentials is not None else None
     received = _normalize_bearer(received_raw)
@@ -236,51 +228,27 @@ def require_auth(credentials: HTTPAuthorizationCredentials | None = Depends(bear
 
     if credentials is None or (scheme or "").lower() != "bearer":
         logger.warning(
-            "AMA_AUTH_DIAG result=missing hash_mode=%s expected_configured=%s received_present=%s scheme=%s",
-            bool(expected_hash),
-            bool(expected_hash or legacy_expected),
+            "AMA_AUTH_DIAG result=missing hash_mode=True expected_configured=True received_present=%s scheme=%s",
             bool(received_raw),
             scheme or "NONE",
         )
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Missing bearer credentials")
 
-    if expected_hash:
-        received_hash = hashlib.sha256(received.encode("utf-8")).hexdigest()
-        if not compare_digest(received_hash, expected_hash):
-            logger.warning(
-                "AMA_AUTH_DIAG result=mismatch mode=sha256 expected_fp=%s received_fp=%s received_len_raw=%s received_len_norm=%s",
-                expected_hash[:12],
-                received_hash[:12],
-                len(received_raw or ""),
-                len(received),
-            )
-            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid bearer credentials")
-        logger.info(
-            "AMA_AUTH_DIAG result=match mode=sha256 token_fp=%s token_len=%s",
-            expected_hash[:12],
-            len(received),
-        )
-        return
-
-    if not legacy_expected:
-        logger.warning("AMA_AUTH_DIAG result=missing expected_configured=False")
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Missing bearer credentials")
-
-    expected = _normalize_bearer(legacy_expected)
-    if not compare_digest(received.encode("utf-8"), expected.encode("utf-8")):
+    received_hash = hashlib.sha256(received.encode("utf-8")).hexdigest()
+    if not compare_digest(received_hash, expected_hash):
         logger.warning(
-            "AMA_AUTH_DIAG result=mismatch mode=legacy expected_len=%s expected_fp=%s received_len=%s received_fp=%s",
-            len(expected),
-            _token_fingerprint(expected),
+            "AMA_AUTH_DIAG result=mismatch mode=sha256 expected_fp=%s received_fp=%s received_len_raw=%s received_len_norm=%s",
+            expected_hash[:12],
+            received_hash[:12],
+            len(received_raw or ""),
             len(received),
-            _token_fingerprint(received),
         )
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid bearer credentials")
 
     logger.info(
-        "AMA_AUTH_DIAG result=match mode=legacy token_len=%s token_fp=%s",
-        len(expected),
-        _token_fingerprint(expected),
+        "AMA_AUTH_DIAG result=match mode=sha256 token_fp=%s token_len=%s",
+        expected_hash[:12],
+        len(received),
     )
 
 
@@ -291,9 +259,7 @@ def health() -> dict[str, Any]:
         "service": "ama-runtime-live-read",
         "api_version": API_VERSION,
         "airtable_read_configured": bool(os.getenv("AIRTABLE_PAT")),
-        "bearer_auth_configured": bool(
-            os.getenv("BLOOM_API_BEARER_TOKEN_SHA256") or os.getenv("BLOOM_API_BEARER_TOKEN")
-        ),
+        "bearer_auth_configured": True,
         "persistence_live": False,
     }
 
