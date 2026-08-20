@@ -1,9 +1,7 @@
 from __future__ import annotations
 
 import os
-import threading
 import uuid
-from dataclasses import dataclass
 from typing import Any
 
 from fastapi import APIRouter, BackgroundTasks, HTTPException
@@ -12,7 +10,8 @@ from pydantic import BaseModel, ConfigDict, Field
 from bloom_engine.apollo.authority import AirtableVisualAuthoritySource, AirtableVisualHTTP, ApolloVisualAuthorityCompiler
 from bloom_engine.apollo.director import ApolloVisualDirector
 from bloom_engine.apollo.gpt_image import OpenAIGPTImage2Transport
-from bloom_engine.apollo.models import VisualJobRequest, VisualRequestKind, VisualRunStatus, VisualSubjectKind
+from bloom_engine.apollo.job_store import AirtableVisualJobStore, VisualJobStore
+from bloom_engine.apollo.models import VisualJobRequest, VisualRequestKind, VisualSubjectKind
 from bloom_engine.apollo.providers import Flux2ProRenderer, GPTImage2Renderer, OpenAIVisualCritic
 from bloom_engine.apollo.storage import AirtableVisualAssetStore
 
@@ -32,19 +31,9 @@ class VisualPlanBody(BaseModel):
 
 
 class VisualGenerateBody(VisualPlanBody):
+    # This must be true in the current request. A previous chat decision, project
+    # preference, or model inference may not silently authorize paid generation.
     confirm_spend: bool = False
-
-
-@dataclass(slots=True)
-class _JobState:
-    status: str
-    request_key: str
-    result: dict[str, Any] | None = None
-    error: str | None = None
-
-
-_JOBS: dict[str, _JobState] = {}
-_JOBS_LOCK = threading.Lock()
 
 
 def _env(name: str) -> str:
@@ -54,11 +43,19 @@ def _env(name: str) -> str:
     return value
 
 
+def _airtable_config() -> tuple[str, str]:
+    return os.getenv("BLOOM_AIRTABLE_BASE_ID", "appNhl43NzKfbsTAw"), _env("AIRTABLE_PAT")
+
+
 def _compiler() -> ApolloVisualAuthorityCompiler:
-    token = _env("AIRTABLE_PAT")
-    base_id = os.getenv("BLOOM_AIRTABLE_BASE_ID", "appNhl43NzKfbsTAw")
+    base_id, token = _airtable_config()
     source = AirtableVisualAuthoritySource(AirtableVisualHTTP(base_id=base_id, token=token))
     return ApolloVisualAuthorityCompiler(source)
+
+
+def _job_store() -> VisualJobStore:
+    base_id, token = _airtable_config()
+    return AirtableVisualJobStore(base_id=base_id, token=token)
 
 
 def _request(body: VisualPlanBody, authorization_token: str | None = None) -> VisualJobRequest:
@@ -105,8 +102,7 @@ def _plan_dict(plan) -> dict[str, Any]:
 
 
 def _director() -> ApolloVisualDirector:
-    token = _env("AIRTABLE_PAT")
-    base_id = os.getenv("BLOOM_AIRTABLE_BASE_ID", "appNhl43NzKfbsTAw")
+    base_id, token = _airtable_config()
     compiler = _compiler()
     flux = Flux2ProRenderer()
     gpt_image = GPTImage2Renderer(OpenAIGPTImage2Transport())
@@ -124,17 +120,14 @@ def _director() -> ApolloVisualDirector:
 
 
 def _execute(job_id: str, request: VisualJobRequest) -> None:
+    store = _job_store()
     try:
         output = _director().run(request)
-        with _JOBS_LOCK:
-            _JOBS[job_id] = _JobState(
-                status=output.status.value,
-                request_key=output.request_key,
-                result=output.to_public_dict(),
-            )
-    except Exception as exc:  # boundary: never leak credentials, only error class/message
-        with _JOBS_LOCK:
-            _JOBS[job_id] = _JobState(status="FAILED", request_key=_JOBS[job_id].request_key, error=str(exc))
+        store.finish(job_id, status=output.status.value, result=output.to_public_dict())
+    except Exception as exc:
+        # Keep failures reviewable without exposing credentials. Provider errors
+        # may be useful, but job_store truncates the durable error envelope.
+        store.fail(job_id, error=f"{type(exc).__name__}:{exc}")
 
 
 @router.post("/plan")
@@ -152,6 +145,7 @@ def visual_generate(body: VisualGenerateBody, background_tasks: BackgroundTasks)
     """Start a paid visual run only after explicit current-request confirmation."""
     if body.confirm_spend is not True:
         raise HTTPException(status_code=422, detail="Explicit confirm_spend=true is required for paid visual generation")
+
     try:
         compiler = _compiler()
         request = _request(body, authorization_token=f"VIS-CAP::{uuid.uuid4().hex}")
@@ -169,13 +163,26 @@ def visual_generate(body: VisualGenerateBody, background_tasks: BackgroundTasks)
             "message": "APOLLO blocked before renderer invocation; no image-generation spend occurred.",
         }
 
+    # Do not create a durable Generating job until every paid provider required by
+    # the configured primary/repair path is present.
     missing_runtime = [name for name in ("BFL_API_KEY", "OPENAI_API_KEY") if not os.getenv(name)]
     if missing_runtime:
         raise HTTPException(status_code=503, detail="Visual providers not configured: " + ", ".join(missing_runtime))
 
     job_id = f"APOLLO-VIS-JOB::{uuid.uuid4().hex}"
-    with _JOBS_LOCK:
-        _JOBS[job_id] = _JobState(status="RUNNING", request_key=plan.request_key)
+    store = _job_store()
+    store.start(
+        visual_job_id=job_id,
+        request_key=plan.request_key,
+        arc=body.arc,
+        subject_id=plan.subject.stable_id,
+        subject_name=plan.subject.display_name,
+        command=body.command,
+        shot_list=tuple(job.output_type for job in plan.jobs),
+        required_anchor_assets=tuple(dict.fromkeys(
+            ref.asset_key for job in ready for ref in job.references
+        )),
+    )
     background_tasks.add_task(_execute, job_id, request)
     return {
         "visual_job_id": job_id,
@@ -191,14 +198,18 @@ def visual_generate(body: VisualGenerateBody, background_tasks: BackgroundTasks)
 
 @router.get("/jobs/{job_id}")
 def visual_job_status(job_id: str) -> dict[str, Any]:
-    with _JOBS_LOCK:
-        state = _JOBS.get(job_id)
+    try:
+        state = _job_store().get(job_id)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
     if state is None:
-        raise HTTPException(status_code=404, detail="Visual job not found on this runtime instance")
+        raise HTTPException(status_code=404, detail="Visual job not found")
     return {
-        "visual_job_id": job_id,
+        "visual_job_id": state.visual_job_id,
         "status": state.status,
         "request_key": state.request_key,
+        "subject_id": state.subject_id,
+        "subject_name": state.subject_name,
         "result": state.result,
         "error": state.error,
         "requires_human_approval": True,
