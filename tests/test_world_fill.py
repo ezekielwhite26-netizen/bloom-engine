@@ -57,6 +57,27 @@ def test_protected_fact_requires_user_approval():
     assert result.decision is WorldFillDecision.USER_APPROVAL_REQUIRED
 
 
+def test_caller_cannot_downgrade_server_protected_predicate_to_generated_canon():
+    protected = proposal(
+        predicate="relationship.romance.secret_attraction",
+        proposed_by_owner="HERA",
+        canon_class=CanonClass.DURABLE_GENERATED_CANON,
+    )
+    result = WorldFillPolicy().assess(protected)
+    assert result.decision is WorldFillDecision.USER_APPROVAL_REQUIRED
+
+
+def test_caller_cannot_downgrade_server_protected_predicate_to_ephemeral_then_approve():
+    protected = proposal(
+        predicate="relationship.romance.secret_attraction",
+        proposed_by_owner="HERA",
+        canon_class=CanonClass.EPHEMERAL,
+        user_approved=True,
+    )
+    result = WorldFillPolicy().assess(protected)
+    assert result.decision is WorldFillDecision.COMMIT_ELIGIBLE_AFTER_APPROVAL
+
+
 def test_user_approved_protected_fact_can_only_proceed_to_persistence_gates():
     protected = proposal(
         predicate="relationship.romance.secret_attraction",

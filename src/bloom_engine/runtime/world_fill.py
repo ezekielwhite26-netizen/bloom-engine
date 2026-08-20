@@ -67,6 +67,20 @@ DEFAULT_WORLD_FILL_RULES: tuple[WorldFillRule, ...] = (
 )
 
 
+# Server-owned classification floor. A caller may request a stricter class, but
+# it may not downgrade one of these predicate families into auto-generated canon.
+PROTECTED_PREDICATE_PREFIXES: tuple[str, ...] = (
+    "relationship.romance.",
+    "relationship.intimacy.",
+    "relationship.betrayal.",
+    "genealogy.",
+    "family.hidden_truth.",
+    "magic.",
+    "plot.hidden.",
+    "authority.major_role.",
+)
+
+
 @dataclass(frozen=True, slots=True)
 class WorldFillProposal:
     predicate: str
@@ -94,6 +108,8 @@ class WorldFillPolicy:
 
     This policy does not generate facts and does not persist them. It only says
     whether a sovereignly proposed fact may proceed to the ADRASTEIA/CLIO gates.
+    Canon classification is bounded by server-owned predicate families so an
+    untrusted caller cannot make protected truth mundane by changing a field.
     """
 
     def __init__(self, rules: Sequence[WorldFillRule] = DEFAULT_WORLD_FILL_RULES):
@@ -104,6 +120,12 @@ class WorldFillPolicy:
         if len(matches) > 1:
             raise ValueError(f"World-fill predicate matched multiple rules: {proposal.predicate}")
         return matches[0] if matches else None
+
+    @staticmethod
+    def _effective_canon_class(proposal: WorldFillProposal) -> CanonClass:
+        if any(proposal.predicate.startswith(prefix) for prefix in PROTECTED_PREDICATE_PREFIXES):
+            return CanonClass.PROTECTED_CANON
+        return proposal.canon_class
 
     def assess(self, proposal: WorldFillProposal) -> WorldFillAssessment:
         sovereign_owner = owner_for(proposal.predicate).name
@@ -121,14 +143,16 @@ class WorldFillPolicy:
                 message="Existing canon conflict must be resolved before world fill.",
             )
 
-        if proposal.canon_class is CanonClass.EPHEMERAL:
+        canon_class = self._effective_canon_class(proposal)
+
+        if canon_class is CanonClass.EPHEMERAL:
             return WorldFillAssessment(
                 WorldFillDecision.EPHEMERAL_ONLY,
                 sovereign_owner,
                 message="Usable for the current run only; do not persist as durable canon.",
             )
 
-        if proposal.canon_class is CanonClass.PROTECTED_CANON:
+        if canon_class is CanonClass.PROTECTED_CANON:
             if proposal.user_approved:
                 return WorldFillAssessment(
                     WorldFillDecision.COMMIT_ELIGIBLE_AFTER_APPROVAL,
