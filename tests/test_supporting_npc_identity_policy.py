@@ -8,7 +8,8 @@ from bloom_engine.social.identity_policy import (
 def _proposal(**overrides):
     base = dict(
         proposed_name="Maya Chen",
-        ordinary_role="Academy junior and Student Council events volunteer",
+        ordinary_role="Academy student activity participant",
+        ordinary_role_code="academy.student.activity_participant",
         population_scope="ACADEMY_STUDENT",
         reason_needed="Fill a recurring ordinary school-network role around Florence.",
         supporting_constraints=("junior cohort", "student activity overlap"),
@@ -74,11 +75,46 @@ def test_missing_constraints_fails_closed():
     assert result.decision is SupportingNpcDecision.BLOCKED
 
 
+def test_missing_server_role_code_fails_closed():
+    result = SupportingNpcIdentityPolicy().assess(_proposal(ordinary_role_code=""))
+    assert result.decision is SupportingNpcDecision.BLOCKED
+
+
+def test_unknown_role_code_fails_closed():
+    result = SupportingNpcIdentityPolicy().assess(_proposal(ordinary_role_code="academy.student.secret_heir"))
+    assert result.decision is SupportingNpcDecision.BLOCKED
+
+
+def test_role_code_cannot_be_reused_in_wrong_population_scope():
+    result = SupportingNpcIdentityPolicy().assess(
+        _proposal(
+            population_scope="TOWN_ORDINARY",
+            ordinary_role_code="academy.student.activity_participant",
+        )
+    )
+    assert result.decision is SupportingNpcDecision.BLOCKED
+
+
+def test_arbitrary_role_prose_cannot_smuggle_protected_truth():
+    result = SupportingNpcIdentityPolicy().assess(
+        _proposal(ordinary_role="Florence's secret magical sister and destined Council ruler")
+    )
+    assert result.decision is SupportingNpcDecision.BLOCKED
+
+
+def test_role_label_must_exactly_match_server_catalog():
+    result = SupportingNpcIdentityPolicy().assess(
+        _proposal(ordinary_role="Academy student activity participant and Florence's best friend")
+    )
+    assert result.decision is SupportingNpcDecision.BLOCKED
+
+
 def test_hollow_circle_identity_shell_does_not_imply_magic():
     result = SupportingNpcIdentityPolicy().assess(
         _proposal(
             proposed_name="Jordan Reyes",
-            ordinary_role="supporting person in Circle community logistics",
+            ordinary_role="Hollow Circle community logistics support",
+            ordinary_role_code="hollow_circle.logistics_support",
             population_scope="HOLLOW_CIRCLE_SUPPORTING_PERSON",
             magical_truth_embedded=False,
         )
