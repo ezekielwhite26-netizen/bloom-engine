@@ -12,7 +12,6 @@ from hmac import compare_digest
 from typing import Any, Sequence
 
 from fastapi import Depends, FastAPI, HTTPException, status
-from fastapi.encoders import jsonable_encoder
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -60,6 +59,10 @@ def _normalize_bearer(value: str | None) -> str:
         ch for ch in normalized
         if not ch.isspace() and unicodedata.category(ch) != "Cf"
     )
+
+
+def _sha256_text(value: str) -> str:
+    return hashlib.sha256(value.encode("utf-8")).hexdigest()
 
 
 class RuntimePreviewBody(BaseModel):
@@ -218,10 +221,10 @@ bearer = HTTPBearer(auto_error=False)
 
 
 def require_auth(credentials: HTTPAuthorizationCredentials | None = Depends(bearer)) -> None:
-    expected_hash = (
-        os.getenv("BLOOM_API_BEARER_TOKEN_SHA256") or DEFAULT_BEARER_SHA256
-    ).strip().lower()
-    legacy_expected = os.getenv("BLOOM_API_BEARER_TOKEN")
+    legacy_expected = _normalize_bearer(os.getenv("BLOOM_API_BEARER_TOKEN"))
+    configured_hash = (os.getenv("BLOOM_API_BEARER_TOKEN_SHA256") or "").strip().lower()
+    expected_hash = configured_hash or (_sha256_text(legacy_expected) if legacy_expected else DEFAULT_BEARER_SHA256)
+
     received_raw = credentials.credentials if credentials is not None else None
     received = _normalize_bearer(received_raw)
     scheme = credentials.scheme if credentials is not None else None
@@ -234,7 +237,7 @@ def require_auth(credentials: HTTPAuthorizationCredentials | None = Depends(bear
         )
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Missing bearer credentials")
 
-    received_hash = hashlib.sha256(received.encode("utf-8")).hexdigest()
+    received_hash = _sha256_text(received)
     if not compare_digest(received_hash, expected_hash):
         logger.warning(
             "AMA_AUTH_DIAG result=mismatch mode=sha256 expected_fp=%s received_fp=%s received_len_raw=%s received_len_norm=%s",
@@ -250,6 +253,73 @@ def require_auth(credentials: HTTPAuthorizationCredentials | None = Depends(bear
         expected_hash[:12],
         len(received),
     )
+
+
+def _compact_runtime_trace(trace: Any, request: SceneRequest, status_text: str) -> dict[str, Any]:
+    """Expose only the small proof envelope needed by the GPT Action.
+
+    The internal RuntimeTrace can contain the full ContextPacket and other runtime
+    objects. That is useful inside BLOOM, but unnecessarily large at the external
+    Action boundary. This projection deliberately omits internal object graphs.
+    """
+    if isinstance(trace, dict):
+        return {
+            "run_key": str(trace.get("run_key", "AMA-READ-PREVIEW")),
+            "final_status": str(trace.get("final_status", status_text)),
+            "request": {
+                "arc": request.arc,
+                "command": request.command,
+                "mode": request.mode,
+                "realization": request.realization,
+            },
+        }
+
+    compact: dict[str, Any] = {
+        "run_key": str(getattr(trace, "run_key", "AMA-READ-PREVIEW")),
+        "final_status": str(getattr(trace, "final_status", status_text)),
+        "request": {
+            "arc": request.arc,
+            "command": request.command,
+            "mode": request.mode,
+            "realization": request.realization,
+        },
+    }
+
+    packet = getattr(trace, "packet", None)
+    if packet is not None:
+        compact["packet"] = {
+            "packet_key": str(getattr(packet, "packet_key", "")),
+            "contract_version": str(getattr(packet, "contract_version", "")),
+            "blockers": list(getattr(packet, "blockers", ()) or ()),
+            "warnings": list(getattr(packet, "warnings", ()) or ()),
+        }
+
+    athena = getattr(trace, "athena", None)
+    if athena is not None:
+        compact["athena"] = {
+            "selected_option_id": getattr(athena, "selected_option_id", None),
+            "fulcrum": str(getattr(athena, "fulcrum", "")),
+            "result": str(getattr(athena, "result", "")),
+            "reason_code": str(getattr(athena, "reason_code", "")),
+        }
+
+    clio = getattr(trace, "clio", None)
+    if clio is not None:
+        compact["clio"] = {
+            "status": str(getattr(clio, "status", "")),
+            "transaction_key": str(getattr(clio, "transaction_key", "")),
+            "readback_verified": bool(getattr(clio, "readback_verified", False)),
+            "message": str(getattr(clio, "message", "")),
+        }
+    else:
+        compact["clio"] = {
+            "status": "NOT_INVOKED",
+            "transaction_key": "",
+            "readback_verified": False,
+            "message": "Read-only preview; no canonical persistence was attempted.",
+        }
+
+    return compact
 
 
 @app.get("/health")
@@ -300,11 +370,9 @@ def runtime_preview(body: RuntimePreviewBody) -> dict[str, Any]:
     except RuntimeError as exc:
         raise HTTPException(status_code=503, detail=f"Runtime safety boundary rejected request: {exc}") from exc
 
-    return jsonable_encoder(
-        {
-            "api_version": API_VERSION,
-            "status": output.status,
-            "text": output.text,
-            "trace": output.trace,
-        }
-    )
+    return {
+        "api_version": API_VERSION,
+        "status": output.status,
+        "text": output.text,
+        "trace": _compact_runtime_trace(output.trace, request, output.status),
+    }
