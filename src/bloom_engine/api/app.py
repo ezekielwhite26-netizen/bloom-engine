@@ -28,8 +28,6 @@ class AmaApiServices:
 
 
 def _assert_preview_only(request: SceneRequest) -> None:
-    """Fail closed if a server-side builder accidentally creates write authority."""
-
     if request.realization != "PREVIEW":
         raise RuntimeError("Ama preview boundary produced a non-preview SceneRequest")
     if request.authorization_token is not None:
@@ -70,14 +68,6 @@ def _proxy_json(*, method: str, path: str, bearer_token: str, body: dict | None 
 
 
 def create_app(*, services: AmaApiServices, bearer_token: str) -> FastAPI:
-    """Create the hosted boundary for Ama.
-
-    This branch remains read/preview only. It does not expose raw sovereign
-    resolver calls and it does not expose persistence. Request correlation logs
-    only method/path/status/request ID; auth headers and request bodies are never
-    logged by BLOOM's access middleware.
-    """
-
     if len(bearer_token) < 24:
         raise ValueError("BLOOM API bearer token must be at least 24 characters")
 
@@ -108,12 +98,7 @@ def create_app(*, services: AmaApiServices, bearer_token: str) -> FastAPI:
 
     @app.get("/health")
     def health() -> dict[str, str]:
-        return {
-            "status": "ok",
-            "service": "bloom-engine",
-            "api_version": API_VERSION,
-            "upstream_mode": "live-read-proxy" if os.getenv("AMA_UPSTREAM_URL") else "local-runtime",
-        }
+        return {"status": "ok", "service": "bloom-engine", "api_version": API_VERSION}
 
     @app.get(
         "/v1/capabilities",
