@@ -1,12 +1,12 @@
 openapi: 3.1.0
 info:
   title: BLOOM / Ama Read-Only Actions
-  version: 0.1.0
+  version: 0.2.0
   description: >-
-    Private Ama action surface for BLOOM capability inspection and read-only
-    runtime preview. No persistence or canon mutation is exposed.
+    Private Ama action surface for BLOOM capability inspection and live read-only
+    Current Scene runtime preview. No persistence or canon mutation is exposed.
 servers:
-  - url: https://ama-runtime-preview.onrender.com
+  - url: https://ama-runtime.onrender.com
 paths:
   /v1/capabilities:
     get:
@@ -14,34 +14,67 @@ paths:
       summary: Inspect the currently exposed BLOOM capabilities
       x-openai-isConsequential: false
       responses:
-        '200':
+        "200":
           description: Current safe capability surface
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/CapabilityView'
+                $ref: "#/components/schemas/CapabilityView"
   /v1/runtime/preview:
     post:
       operationId: previewBloomRuntime
-      summary: Run a read-only BLOOM runtime preview
+      summary: Read the authoritative active Aster Hollow Current Scene through BLOOM
       x-openai-isConsequential: false
       requestBody:
         required: true
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/RuntimePreviewBody'
+              $ref: "#/components/schemas/RuntimePreviewBody"
       responses:
-        '200':
+        "200":
           description: Read-only runtime preview result
           content:
             application/json:
               schema:
                 type: object
-        '422':
-          description: Invalid or authority-bearing client input rejected
-        '503':
+                properties:
+                  api_version:
+                    type: string
+                  status:
+                    type: string
+                  text:
+                    type: string
+                  trace:
+                    type: object
+                    additionalProperties: true
+                required:
+                  - api_version
+                  - status
+                  - text
+                additionalProperties: true
+        "422":
+          description: Invalid, unsupported, or authority-bearing client input rejected
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  detail:
+                    type: string
+                additionalProperties: true
+        "503":
           description: Runtime safety boundary rejected the request
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  detail:
+                    type: string
+                required:
+                  - detail
+                additionalProperties: true
 components:
   schemas:
     RuntimePreviewBody:
@@ -59,22 +92,24 @@ components:
           minLength: 1
         mode:
           type: string
-          enum: [DRY_RUN, LIVE_PLAY]
+          enum:
+            - DRY_RUN
+            - LIVE_PLAY
           default: DRY_RUN
         requested_actor_ref:
-          anyOf:
-            - type: string
-            - type: 'null'
+          type:
+            - string
+            - "null"
           default: null
         requested_target_location_ref:
-          anyOf:
-            - type: string
-            - type: 'null'
+          type:
+            - string
+            - "null"
           default: null
         requested_object_ref:
-          anyOf:
-            - type: string
-            - type: 'null'
+          type:
+            - string
+            - "null"
           default: null
         visual_requested:
           type: boolean
