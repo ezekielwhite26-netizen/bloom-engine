@@ -62,6 +62,26 @@ def _norm(value: str) -> str:
     return " ".join(value.casefold().split())
 
 
+def _arc_matches(authority_arc: str, request_arc: str) -> bool:
+    """Return whether an authority arc applies to the requested arc.
+
+    BLOOM stores some visual authority at a stable arc root (for example
+    ``Aster Hollow``) while character entities live in a child arc such as
+    ``Aster Hollow / At the Threshold``.  ARC-scoped visual authority is
+    intentionally hierarchical, but only across the explicit `` / `` path
+    delimiter.  This is not fuzzy matching and therefore cannot make unrelated
+    arcs collide merely because one name is a textual prefix of another.
+    """
+
+    authority = _norm(authority_arc)
+    requested = _norm(request_arc)
+    if not authority:
+        return True
+    if authority == requested:
+        return True
+    return requested.startswith(authority + " / ")
+
+
 def _split_lines(value: Any) -> tuple[str, ...]:
     if value is None:
         return ()
@@ -198,8 +218,8 @@ class AirtableVisualAuthoritySource:
         if scope == "GLOBAL":
             return True
         if scope == "ARC":
-            return not row_arc or row_arc == arc
-        if row_arc and row_arc != arc:
+            return _arc_matches(row_arc, arc)
+        if row_arc and not _arc_matches(row_arc, arc):
             return False
         return cls._asset_matches_subject(fields, subject)
 
@@ -244,7 +264,7 @@ class AirtableVisualAuthoritySource:
             if not self._asset_matches_subject(fields, subject):
                 continue
             row_arc = str(fields.get(ASSET_F["arc"], "")).strip()
-            if row_arc and row_arc != arc:
+            if row_arc and not _arc_matches(row_arc, arc):
                 continue
             if _select_name(fields.get(ASSET_F["status"])) not in APPROVED_ASSET_STATUSES:
                 continue
