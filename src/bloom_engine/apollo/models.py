@@ -78,6 +78,7 @@ class VisualPackJobDefinition:
     prompt: str
     required_reference_roles: tuple[str, ...]
     hard_gates: tuple[str, ...]
+    optional_reference_roles: tuple[str, ...] = ()
     soft_criteria: tuple[str, ...] = ()
     style_rules: tuple[str, ...] = ()
     anti_drift: tuple[str, ...] = ()
@@ -109,8 +110,6 @@ class CompiledVisualJob:
     open_fields: tuple[str, ...]
     max_iterations: int
     missing_dependencies: tuple[str, ...] = ()
-    # Stable Airtable/Saga Entity record link for durable candidate linkage.
-    # Default keeps deterministic unit-test/fake constructors lightweight.
     subject_record_id: str = ""
 
     @property
