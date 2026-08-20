@@ -1,0 +1,207 @@
+openapi: 3.1.0
+info:
+  title: Ama BLOOM Runtime + APOLLO Preview Action
+  version: 0.3.0-preview
+  description: >-
+    Preview Action schema for the authenticated BLOOM Ama runtime with APOLLO visual planning,
+    explicit paid-generation gating, durable visual-job status, and mandatory human review.
+    This schema is not the currently deployed live contract until the preview app is deployed.
+servers:
+  - url: https://ama-runtime.onrender.com
+paths:
+  /v1/capabilities:
+    get:
+      operationId: getAmaRuntimeCapabilities
+      summary: Check hosted BLOOM/Ama capabilities
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Capability flags
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        '401':
+          description: Missing or invalid bearer credentials
+  /v1/runtime/preview:
+    post:
+      operationId: inspectAsterHollowCurrentState
+      summary: Inspect the verified active Aster Hollow scene without changing anything
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [arc, command]
+              properties:
+                arc:
+                  type: string
+                  enum: [Aster Hollow / At the Threshold]
+                  default: Aster Hollow / At the Threshold
+                command:
+                  type: string
+                  minLength: 1
+                mode:
+                  type: string
+                  enum: [DRY_RUN]
+                  default: DRY_RUN
+                requested_actor_ref:
+                  type: [string, 'null']
+                requested_target_location_ref:
+                  type: [string, 'null']
+                requested_object_ref:
+                  type: [string, 'null']
+                visual_requested:
+                  type: boolean
+                  default: false
+      responses:
+        '200':
+          description: Verified read-only runtime result
+        '401':
+          description: Missing or invalid bearer credentials
+        '422':
+          description: Unsupported request
+        '503':
+          description: BLOOM safety boundary rejected the request or live state was unavailable
+  /v1/visual/plan:
+    post:
+      operationId: planApolloVisualRequest
+      summary: Compile APOLLO visual authority and production coverage without generating
+      description: >-
+        Read-only/no-spend planning operation. Use this before generation to prove the subject,
+        explicit field-specific Gold references, missing image attachments, approved production
+        dependencies, and blocked/ready slots. This endpoint never invokes an image renderer.
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/VisualPlanBody'
+      responses:
+        '200':
+          description: APOLLO visual plan
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        '401':
+          description: Missing or invalid bearer credentials
+        '422':
+          description: Subject, authority, or requested output could not be resolved safely
+  /v1/visual/generate:
+    post:
+      operationId: startApolloVisualGeneration
+      summary: Start an explicitly authorized paid APOLLO visual run
+      description: >-
+        PAID SIDE EFFECT. Call only when the user's current message explicitly asks to generate
+        or edit an image and the user has authorized the spend for this run. `confirm_spend` must
+        be true in this exact request. Prior approval, uploaded images, discussion of APOLLO,
+        visual review, or a standing preference are not generation authorization. If APOLLO is
+        blocked before renderer invocation, the response reports spent=false. SYSTEM_PASS never
+        means APPROVED or GOLD; human review remains required.
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              allOf:
+                - $ref: '#/components/schemas/VisualPlanBody'
+                - type: object
+                  required: [confirm_spend]
+                  properties:
+                    confirm_spend:
+                      type: boolean
+                      const: true
+                      description: Must reflect explicit current-turn user authorization for paid generation.
+      responses:
+        '200':
+          description: Visual job started, or blocked before spend
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        '401':
+          description: Missing or invalid bearer credentials
+        '422':
+          description: Explicit spend confirmation missing or request unsafe
+        '503':
+          description: Required renderer/critic provider is not configured
+  /v1/visual/jobs/{job_id}:
+    get:
+      operationId: getApolloVisualJob
+      summary: Read durable APOLLO visual job status and review candidates
+      description: >-
+        Returns operational job status from BLOOM Visual Batches. Generated candidate image URLs
+        may be returned for human review. No returned status grants canon authority by itself.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: job_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Durable visual job status
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        '401':
+          description: Missing or invalid bearer credentials
+        '404':
+          description: Visual job not found
+        '503':
+          description: Durable job registry unavailable
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+  schemas:
+    VisualPlanBody:
+      type: object
+      additionalProperties: false
+      required: [arc, command, subject_query]
+      properties:
+        arc:
+          type: string
+          enum: [Aster Hollow / At the Threshold]
+          default: Aster Hollow / At the Threshold
+        command:
+          type: string
+          minLength: 1
+        subject_query:
+          type: string
+          minLength: 1
+          description: User-facing subject name, alias, or stable BLM identity to resolve exactly.
+        subject_kind:
+          type: string
+          enum: [CHARACTER, LOCATION, OBJECT, SCENE]
+          default: CHARACTER
+        request_kind:
+          type: string
+          enum: [SINGLE_ASSET, PRODUCTION_PACK]
+          default: PRODUCTION_PACK
+        output_type:
+          type: [string, 'null']
+          description: Required for SINGLE_ASSET; omitted for a registered production pack.
+        max_iterations:
+          type: integer
+          minimum: 1
+          maximum: 6
+          default: 5
