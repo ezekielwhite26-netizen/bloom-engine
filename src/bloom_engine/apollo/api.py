@@ -28,6 +28,10 @@ class VisualPlanBody(BaseModel):
     request_kind: VisualRequestKind = VisualRequestKind.PRODUCTION_PACK
     output_type: str | None = None
     max_iterations: int = Field(default=5, ge=1, le=6)
+    # Conservative default: approximately one paid renderer call per slot for a
+    # full character pack. Higher repair budgets must be present in the current
+    # request and are still capped by the Director's absolute ceiling.
+    max_renderer_calls: int = Field(default=12, ge=1, le=60)
 
 
 class VisualGenerateBody(VisualPlanBody):
@@ -67,22 +71,30 @@ def _request(body: VisualPlanBody, authorization_token: str | None = None) -> Vi
         request_kind=body.request_kind,
         output_type=body.output_type,
         max_iterations=body.max_iterations,
+        max_renderer_calls=body.max_renderer_calls,
         authorization_token=authorization_token,
     )
 
 
-def _plan_dict(plan) -> dict[str, Any]:
+def _plan_dict(plan, *, renderer_call_limit: int = 12) -> dict[str, Any]:
+    ready = [job for job in plan.jobs if job.ready]
     return {
         "request_key": plan.request_key,
         "subject_id": plan.subject.stable_id,
         "subject_name": plan.subject.display_name,
         "subject_kind": plan.subject.kind.value,
+        "ready_job_count": len(ready),
+        "blocked_job_count": len(plan.jobs) - len(ready),
+        "minimum_first_pass_renderer_calls": len(ready),
+        "renderer_call_limit": renderer_call_limit,
+        "execution_policy": "ROUND_ROBIN_FIRST_PASS_BEFORE_REPAIRS",
         "warnings": list(plan.warnings),
         "jobs": [
             {
                 "job_key": job.job_key,
                 "output_type": job.output_type,
                 "ready": job.ready,
+                "max_iterations": job.max_iterations,
                 "reference_assets": [
                     {
                         "asset_key": ref.asset_key,
@@ -125,8 +137,6 @@ def _execute(job_id: str, request: VisualJobRequest) -> None:
         output = _director().run(request)
         store.finish(job_id, status=output.status.value, result=output.to_public_dict())
     except Exception as exc:
-        # Keep failures reviewable without exposing credentials. Provider errors
-        # may be useful, but job_store truncates the durable error envelope.
         store.fail(job_id, error=f"{type(exc).__name__}:{exc}")
 
 
@@ -144,10 +154,14 @@ def visual_capabilities() -> dict[str, Any]:
         "primary_renderer": "flux-2-pro",
         "repair_renderer": "gpt-image-2-2026-04-21",
         "critic": "gpt-5.6",
+        "default_renderer_call_limit": 12,
+        "absolute_renderer_call_ceiling": 60,
+        "production_pack_execution": "ROUND_ROBIN_FIRST_PASS_BEFORE_REPAIRS",
         "explicit_current_request_generation_authorization_required": True,
         "explicit_spend_confirmation_required": True,
         "system_pass_requires_human_approval": True,
         "automatic_gold_promotion": False,
+        "automatic_paid_retry_after_host_restart": False,
         "live_deployment_claimed": False,
     }
 
@@ -159,7 +173,7 @@ def visual_plan(body: VisualPlanBody) -> dict[str, Any]:
         plan = _compiler().compile(_request(body))
     except (RuntimeError, ValueError) as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
-    return _plan_dict(plan)
+    return _plan_dict(plan, renderer_call_limit=body.max_renderer_calls)
 
 
 @router.post("/generate")
@@ -180,13 +194,11 @@ def visual_generate(body: VisualGenerateBody, background_tasks: BackgroundTasks)
         return {
             "visual_job_id": None,
             "status": "BLOCKED",
-            "plan": _plan_dict(plan),
+            "plan": _plan_dict(plan, renderer_call_limit=body.max_renderer_calls),
             "spent": False,
             "message": "APOLLO blocked before renderer invocation; no image-generation spend occurred.",
         }
 
-    # Do not create a durable Generating job until every paid provider required by
-    # the configured primary/repair path is present.
     missing_runtime = [name for name in ("BFL_API_KEY", "OPENAI_API_KEY") if not os.getenv(name)]
     if missing_runtime:
         raise HTTPException(status_code=503, detail="Visual providers not configured: " + ", ".join(missing_runtime))
@@ -199,7 +211,7 @@ def visual_generate(body: VisualGenerateBody, background_tasks: BackgroundTasks)
         arc=body.arc,
         subject_id=plan.subject.stable_id,
         subject_name=plan.subject.display_name,
-        command=body.command,
+        command=f"{body.command}\nAPOLLO renderer-call limit for this run: {body.max_renderer_calls}",
         shot_list=tuple(job.output_type for job in plan.jobs),
         required_anchor_assets=tuple(dict.fromkeys(
             ref.asset_key for job in ready for ref in job.references
@@ -214,6 +226,10 @@ def visual_generate(body: VisualGenerateBody, background_tasks: BackgroundTasks)
         "subject_name": plan.subject.display_name,
         "ready_job_count": len(ready),
         "blocked_job_count": len(plan.jobs) - len(ready),
+        "renderer_call_limit": body.max_renderer_calls,
+        "execution_policy": "ROUND_ROBIN_FIRST_PASS_BEFORE_REPAIRS",
+        "spend_authorized_for_this_run": True,
+        "spent": None,
         "requires_human_approval": True,
     }
 
@@ -234,5 +250,8 @@ def visual_job_status(job_id: str) -> dict[str, Any]:
         "subject_name": state.subject_name,
         "result": state.result,
         "error": state.error,
+        "started_at": state.started_at,
+        "updated_at": state.updated_at,
+        "recovery_required": state.recovery_required,
         "requires_human_approval": True,
     }
