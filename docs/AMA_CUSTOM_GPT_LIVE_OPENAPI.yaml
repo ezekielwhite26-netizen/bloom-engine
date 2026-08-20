@@ -1,0 +1,142 @@
+openapi: 3.1.0
+info:
+  title: BLOOM / Ama Read-Only Actions
+  version: 0.2.1
+  description: >-
+    Private Ama action surface for BLOOM capability inspection and live read-only
+    Current Scene runtime preview. No persistence or canon mutation is exposed.
+servers:
+  - url: https://ama-runtime-preview.onrender.com
+paths:
+  /v1/capabilities:
+    get:
+      operationId: getBloomCapabilities
+      summary: Inspect the currently exposed BLOOM capabilities
+      x-openai-isConsequential: false
+      responses:
+        "200":
+          description: Current safe capability surface
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CapabilityView"
+  /v1/runtime/preview:
+    post:
+      operationId: previewBloomRuntime
+      summary: Read the authoritative active Aster Hollow Current Scene through BLOOM
+      x-openai-isConsequential: false
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RuntimePreviewBody"
+      responses:
+        "200":
+          description: Read-only runtime preview result
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  api_version:
+                    type: string
+                  status:
+                    type: string
+                  text:
+                    type: string
+                  trace:
+                    type: object
+                    additionalProperties: true
+                required:
+                  - api_version
+                  - status
+                  - text
+                additionalProperties: true
+        "422":
+          description: Invalid, unsupported, or authority-bearing client input rejected
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  detail:
+                    type: string
+                additionalProperties: true
+        "503":
+          description: Runtime safety boundary rejected the request
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  detail:
+                    type: string
+                required:
+                  - detail
+                additionalProperties: true
+components:
+  schemas:
+    RuntimePreviewBody:
+      type: object
+      additionalProperties: false
+      required:
+        - arc
+        - command
+      properties:
+        arc:
+          type: string
+          minLength: 1
+        command:
+          type: string
+          minLength: 1
+        mode:
+          type: string
+          enum:
+            - DRY_RUN
+            - LIVE_PLAY
+          default: DRY_RUN
+        requested_actor_ref:
+          type:
+            - string
+            - "null"
+          default: null
+        requested_target_location_ref:
+          type:
+            - string
+            - "null"
+          default: null
+        requested_object_ref:
+          type:
+            - string
+            - "null"
+          default: null
+        visual_requested:
+          type: boolean
+          default: false
+    CapabilityView:
+      type: object
+      additionalProperties: false
+      required:
+        - api_version
+        - runtime_preview
+        - runtime_commit
+        - persistence_live
+        - raw_sovereign_query_api
+        - client_may_supply_authoritative_evidence
+        - model_may_mint_write_authority
+      properties:
+        api_version:
+          type: string
+        runtime_preview:
+          type: boolean
+        runtime_commit:
+          type: boolean
+        persistence_live:
+          type: boolean
+        raw_sovereign_query_api:
+          type: boolean
+        client_may_supply_authoritative_evidence:
+          type: boolean
+        model_may_mint_write_authority:
+          type: boolean
