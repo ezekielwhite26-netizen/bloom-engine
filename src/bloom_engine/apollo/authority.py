@@ -63,15 +63,7 @@ def _norm(value: str) -> str:
 
 
 def _arc_matches(authority_arc: str, request_arc: str) -> bool:
-    """Return whether an authority arc applies to the requested arc.
-
-    BLOOM stores some visual authority at a stable arc root (for example
-    ``Aster Hollow``) while character entities live in a child arc such as
-    ``Aster Hollow / At the Threshold``.  ARC-scoped visual authority is
-    intentionally hierarchical, but only across the explicit `` / `` path
-    delimiter.  This is not fuzzy matching and therefore cannot make unrelated
-    arcs collide merely because one name is a textual prefix of another.
-    """
+    """Match an authority arc to the same arc or an explicit child arc path."""
 
     authority = _norm(authority_arc)
     requested = _norm(request_arc)
@@ -259,8 +251,6 @@ class AirtableVisualAuthoritySource:
         slots: list[str] = []
         for row in self.client.list_all(VISUAL_ASSETS):
             fields = row.get("fields", {})
-            # Production-slot approval is always subject-specific even if an asset
-            # also participates in arc/global style authority.
             if not self._asset_matches_subject(fields, subject):
                 continue
             row_arc = str(fields.get(ASSET_F["arc"], "")).strip()
@@ -287,16 +277,25 @@ class ApolloVisualAuthorityCompiler:
             return generic_character_production_pack(subject.stable_id)
         raise ValueError(f"VISUAL_PACK_NOT_REGISTERED:{subject.stable_id}")
 
+    @staticmethod
+    def _one_authority(refs_by_role: dict[str, list[VisualReferenceAuthority]], role: str) -> VisualReferenceAuthority | None:
+        matches = refs_by_role.get(role, [])
+        if not matches:
+            return None
+        if len(matches) != 1:
+            keys = sorted(ref.asset_key for ref in matches)
+            raise ValueError(f"AMBIGUOUS_VISUAL_AUTHORITY_ROLE:{role}:{keys}")
+        return matches[0]
+
     def compile(self, request: VisualJobRequest) -> CompiledVisualRequest:
         subject = self.source.resolve_subject(request.subject_query, request.subject_kind, request.arc)
         if subject is None:
             raise ValueError(f"VISUAL_SUBJECT_NOT_RESOLVED:{request.subject_query}")
         pack = self._pack_for_subject(subject)
         references = self.source.list_references(subject, request.arc)
-        by_role = {ref.role: ref for ref in references}
-        if len(by_role) != len(references):
-            duplicated = sorted({ref.role for ref in references if sum(1 for x in references if x.role == ref.role) > 1})
-            raise ValueError(f"AMBIGUOUS_VISUAL_AUTHORITY_ROLE:{duplicated}")
+        refs_by_role: dict[str, list[VisualReferenceAuthority]] = {}
+        for ref in references:
+            refs_by_role.setdefault(ref.role, []).append(ref)
         approved = set(self.source.approved_slots(subject, request.arc))
 
         definitions = list(pack.jobs)
@@ -307,13 +306,27 @@ class ApolloVisualAuthorityCompiler:
             if not definitions:
                 raise ValueError(f"VISUAL_OUTPUT_TYPE_NOT_REGISTERED:{request.output_type}")
 
+        # Secondary/mood/reference roles may legitimately have several approved
+        # records. They are not production authority unless a registered job asks
+        # for that role. Ambiguity therefore fails closed only when the pack would
+        # actually consume the duplicated authority.
+        consumed_roles = {
+            role
+            for definition in definitions
+            for role in (*definition.required_reference_roles, *definition.optional_reference_roles)
+        }
+        ambiguous = sorted(role for role in consumed_roles if len(refs_by_role.get(role, [])) > 1)
+        if ambiguous:
+            details = {role: sorted(ref.asset_key for ref in refs_by_role[role]) for role in ambiguous}
+            raise ValueError(f"AMBIGUOUS_VISUAL_AUTHORITY_ROLE:{details}")
+
         jobs: list[CompiledVisualJob] = []
         warnings: list[str] = []
         for index, definition in enumerate(sorted(definitions, key=lambda job: job.priority), start=1):
             missing: list[str] = []
             selected: list[VisualReferenceAuthority] = []
             for role in definition.required_reference_roles:
-                ref = by_role.get(role)
+                ref = self._one_authority(refs_by_role, role)
                 if ref is None:
                     missing.append(f"REFERENCE:{role}")
                 elif not ref.has_image:
@@ -321,16 +334,13 @@ class ApolloVisualAuthorityCompiler:
                 else:
                     selected.append(ref)
             for role in definition.optional_reference_roles:
-                ref = by_role.get(role)
+                ref = self._one_authority(refs_by_role, role)
                 if ref is None:
                     continue
                 if not ref.has_image:
                     warnings.append(f"{definition.output_type}: OPTIONAL_MISSING_ATTACHMENT:{ref.asset_key}")
                     continue
                 selected.append(ref)
-            # Avoid sending the same exact asset twice when curation assigns it
-            # more than one authority role. Its Authoritative For text still
-            # communicates all fields it controls.
             selected = list({ref.record_id: ref for ref in selected}.values())
             for dep in definition.approved_dependencies:
                 if dep not in approved:
