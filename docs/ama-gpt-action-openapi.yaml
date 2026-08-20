@@ -1,0 +1,117 @@
+openapi: 3.1.0
+info:
+  title: Ama BLOOM Runtime Action
+  version: 0.1.0
+  description: >-
+    Read-only Custom GPT Action surface for Ama. This API exposes verified BLOOM runtime
+    context and capabilities. It cannot persist canon, mint write authority, or commit story state.
+servers:
+  - url: https://ama-runtime.onrender.com
+paths:
+  /v1/capabilities:
+    get:
+      operationId: getAmaRuntimeCapabilities
+      summary: Check what the hosted Ama runtime can safely do
+      description: >-
+        Use this when Ama needs to verify whether the runtime supports preview, commit,
+        persistence, or raw sovereign queries before promising an operation.
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Runtime capability flags
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        '401':
+          description: Missing or invalid bearer credentials
+  /v1/runtime/preview:
+    post:
+      operationId: inspectAsterHollowCurrentState
+      summary: Inspect the verified active Aster Hollow scene without changing anything
+      description: >-
+        Use this whenever the user's question depends on the current persisted Aster Hollow
+        scene pointer/state. This endpoint is DRY_RUN and PREVIEW only. Treat returned text and
+        trace as BLOOM runtime evidence. Do not claim that any state was changed.
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required:
+                - arc
+                - command
+              properties:
+                arc:
+                  type: string
+                  enum:
+                    - Aster Hollow / At the Threshold
+                  default: Aster Hollow / At the Threshold
+                  description: Active BLOOM arc namespace for the current Aster Hollow campaign.
+                command:
+                  type: string
+                  minLength: 1
+                  examples:
+                    - Inspect the current Aster Hollow state and active scene pointer
+                  description: >-
+                    Ask only for current-scene inspection, current Aster Hollow state, active
+                    scene, or scene pointer. The runtime fails closed for unsupported requests.
+                mode:
+                  type: string
+                  enum:
+                    - DRY_RUN
+                  default: DRY_RUN
+                requested_actor_ref:
+                  type:
+                    - string
+                    - 'null'
+                requested_target_location_ref:
+                  type:
+                    - string
+                    - 'null'
+                requested_object_ref:
+                  type:
+                    - string
+                    - 'null'
+                visual_requested:
+                  type: boolean
+                  default: false
+      responses:
+        '200':
+          description: Verified read-only BLOOM runtime result
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - api_version
+                  - status
+                  - text
+                  - trace
+                properties:
+                  api_version:
+                    type: string
+                  status:
+                    type: string
+                  text:
+                    type: string
+                  trace:
+                    type: object
+                    additionalProperties: true
+        '401':
+          description: Missing or invalid bearer credentials
+        '422':
+          description: Request is outside the currently exposed read-only runtime scope
+        '503':
+          description: BLOOM safety boundary rejected the request or live state was unavailable
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
