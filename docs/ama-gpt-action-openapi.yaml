@@ -1,10 +1,11 @@
 openapi: 3.1.0
 info:
   title: Ama BLOOM Runtime Action
-  version: 0.1.0
+  version: 0.3.0
   description: >-
     Read-only Custom GPT Action surface for Ama. This API exposes verified BLOOM runtime
-    context and capabilities. It cannot persist canon, mint write authority, or commit story state.
+    context plus bounded manuscript-authoring evidence and ADRASTEIA review. It cannot
+    persist story canon, commit reader-ledger state, mint write authority, or rewrite prose.
 servers:
   - url: https://ama-runtime.onrender.com
 paths:
@@ -13,8 +14,7 @@ paths:
       operationId: getAmaRuntimeCapabilities
       summary: Check what the hosted Ama runtime can safely do
       description: >-
-        Use this when Ama needs to verify whether the runtime supports preview, commit,
-        persistence, or raw sovereign queries before promising an operation.
+        Verify runtime and manuscript capabilities before promising an operation.
       security:
         - bearerAuth: []
       responses:
@@ -27,14 +27,70 @@ paths:
                 additionalProperties: true
         '401':
           description: Missing or invalid bearer credentials
+
   /v1/runtime/preview:
     post:
       operationId: inspectAsterHollowCurrentState
       summary: Inspect the verified active Aster Hollow scene without changing anything
       description: >-
-        Use this whenever the user's question depends on the current persisted Aster Hollow
-        scene pointer/state. This endpoint is DRY_RUN and PREVIEW only. Treat returned text and
-        trace as BLOOM runtime evidence. Do not claim that any state was changed.
+        Use when the request depends on the current persisted Aster Hollow scene pointer/state.
+        DRY_RUN and PREVIEW only. Treat returned text and trace as BLOOM runtime evidence.
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [arc, command]
+              properties:
+                arc:
+                  type: string
+                  enum: [Aster Hollow / At the Threshold]
+                  default: Aster Hollow / At the Threshold
+                command:
+                  type: string
+                  minLength: 1
+                mode:
+                  type: string
+                  enum: [DRY_RUN]
+                  default: DRY_RUN
+                requested_actor_ref:
+                  type: [string, 'null']
+                requested_target_location_ref:
+                  type: [string, 'null']
+                requested_object_ref:
+                  type: [string, 'null']
+                visual_requested:
+                  type: boolean
+                  default: false
+      responses:
+        '200':
+          description: Verified read-only BLOOM runtime result
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        '401':
+          description: Missing or invalid bearer credentials
+        '422':
+          description: Request is outside the read-only runtime scope
+        '503':
+          description: BLOOM safety boundary rejected the request or live state was unavailable
+
+  /v1/manuscript/context:
+    post:
+      operationId: prepareAmaManuscriptContext
+      summary: Prepare a bounded BLOOM manuscript evidence packet
+      description: >-
+        Use before drafting or revising reader-facing Aster Hollow manuscript prose. The service
+        reads existing BLOOM authoring/canon evidence, approved Gold and committed reader-ledger
+        state, then issues a temporary context id. HISTORICAL_MANUSCRIPT mode intentionally omits
+        later mutable state that could leak backward into an earlier chapter. This endpoint never
+        calls CLIO and never commits story canon or reader state.
       security:
         - bearerAuth: []
       requestBody:
@@ -47,69 +103,116 @@ paths:
               required:
                 - arc
                 - command
+                - scene_or_chapter
+                - character_names
+                - location_names
               properties:
                 arc:
                   type: string
-                  enum:
-                    - Aster Hollow / At the Threshold
+                  enum: [Aster Hollow / At the Threshold]
                   default: Aster Hollow / At the Threshold
-                  description: Active BLOOM arc namespace for the current Aster Hollow campaign.
                 command:
                   type: string
                   minLength: 1
-                  examples:
-                    - Inspect the current Aster Hollow state and active scene pointer
-                  description: >-
-                    Ask only for current-scene inspection, current Aster Hollow state, active
-                    scene, or scene pointer. The runtime fails closed for unsupported requests.
-                mode:
+                scene_or_chapter:
                   type: string
-                  enum:
-                    - DRY_RUN
-                  default: DRY_RUN
-                requested_actor_ref:
-                  type:
-                    - string
-                    - 'null'
-                requested_target_location_ref:
-                  type:
-                    - string
-                    - 'null'
-                requested_object_ref:
-                  type:
-                    - string
-                    - 'null'
-                visual_requested:
-                  type: boolean
-                  default: false
+                  minLength: 1
+                temporal_scope:
+                  type: string
+                  enum: [HISTORICAL_MANUSCRIPT, CURRENT_SCENE]
+                  default: HISTORICAL_MANUSCRIPT
+                character_names:
+                  type: array
+                  items:
+                    type: string
+                  description: Exact canonical character names required for the requested prose.
+                location_names:
+                  type: array
+                  items:
+                    type: string
+                  description: Exact canonical location names required for the requested prose.
       responses:
         '200':
-          description: Verified read-only BLOOM runtime result
+          description: Issued read-only manuscript context and evidence keys
           content:
             application/json:
               schema:
                 type: object
-                required:
-                  - api_version
-                  - status
-                  - text
-                  - trace
-                properties:
-                  api_version:
-                    type: string
-                  status:
-                    type: string
-                  text:
-                    type: string
-                  trace:
-                    type: object
-                    additionalProperties: true
+                additionalProperties: true
         '401':
           description: Missing or invalid bearer credentials
         '422':
-          description: Request is outside the currently exposed read-only runtime scope
+          description: Invalid request or unresolved exact identity/evidence contract
         '503':
-          description: BLOOM safety boundary rejected the request or live state was unavailable
+          description: Live BLOOM authoring evidence was unavailable
+
+  /v1/manuscript/review:
+    post:
+      operationId: reviewAmaManuscriptDraft
+      summary: Run ADRASTEIA review against an issued manuscript context
+      description: >-
+        After CALLIOPE/Ama drafts or revises prose, declare only the factual/agency claims the draft
+        actually makes using evidence keys from the issued manuscript context. ADRASTEIA diagnoses
+        unsupported canon, protected player commitments, reader-orientation gaps, and forbidden
+        reader-ledger commit attempts. ADRASTEIA never returns replacement prose; CALLIOPE performs
+        any revision. This endpoint never calls CLIO or persists story/reader state.
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [context_id, phase, claims]
+              properties:
+                context_id:
+                  type: string
+                  minLength: 1
+                phase:
+                  type: string
+                  enum: [DRAFT, FINAL]
+                claims:
+                  type: array
+                  items:
+                    type: object
+                    additionalProperties: false
+                    required: [kind, key]
+                    properties:
+                      kind:
+                        type: string
+                        description: FACT or PLAYER_COMMITMENT. Other claim labels are accepted but receive the same evidence-key gate.
+                      key:
+                        type: string
+                        description: Evidence key issued by prepareAmaManuscriptContext.
+                reader_new_subjects:
+                  type: array
+                  items:
+                    type: string
+                  default: []
+                oriented_subjects:
+                  type: array
+                  items:
+                    type: string
+                  default: []
+                reader_ledger_commit_requested:
+                  type: boolean
+                  default: false
+      responses:
+        '200':
+          description: ADRASTEIA findings and pass/block status; never replacement prose
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        '401':
+          description: Missing or invalid bearer credentials
+        '410':
+          description: Manuscript context expired or was not issued by the service
+        '422':
+          description: Invalid review phase or body
 components:
   securitySchemes:
     bearerAuth:

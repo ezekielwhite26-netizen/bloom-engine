@@ -27,8 +27,13 @@ from bloom_engine.runtime import (
     SceneAnchor,
     SceneRequest,
 )
+from bloom_engine.runtime.manuscript import (
+    ManuscriptContextRepository,
+    ManuscriptSessionStore,
+    review_manuscript,
+)
 
-API_VERSION = "AMA-BLOOM-API-v0.2-live-read"
+API_VERSION = "AMA-BLOOM-API-v0.3-manuscript-read"
 DEFAULT_BEARER_SHA256 = "23060d0feb513d330823bc9762667e11982848d8cf0b68b36972a71233257b36"
 CURRENT_SCENE_TABLE = "tblipTnwAEA05zs9v"
 SCENE_F = {
@@ -77,6 +82,35 @@ class RuntimePreviewBody(BaseModel):
     visual_requested: bool = False
 
 
+class ManuscriptContextBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    arc: str = Field(min_length=1)
+    command: str = Field(min_length=1)
+    scene_or_chapter: str = Field(min_length=1)
+    temporal_scope: str = "HISTORICAL_MANUSCRIPT"
+    character_names: list[str] = Field(default_factory=list)
+    location_names: list[str] = Field(default_factory=list)
+
+
+class ManuscriptClaimBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    kind: str = Field(min_length=1)
+    key: str = Field(min_length=1)
+
+
+class ManuscriptReviewBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    context_id: str = Field(min_length=1)
+    phase: str
+    claims: list[ManuscriptClaimBody] = Field(default_factory=list)
+    reader_new_subjects: list[str] = Field(default_factory=list)
+    oriented_subjects: list[str] = Field(default_factory=list)
+    reader_ledger_commit_requested: bool = False
+
+
 @dataclass(slots=True)
 class AirtableReadOnlyHTTP:
     base_id: str
@@ -97,7 +131,7 @@ class AirtableReadOnlyHTTP:
                 method="GET",
                 headers={
                     "Authorization": f"Bearer {self.token}",
-                    "User-Agent": "BLOOM-Ama-ReadOnly/0.2",
+                    "User-Agent": "BLOOM-Ama-ReadOnly/0.3",
                 },
             )
             with urllib.request.urlopen(request, timeout=self.timeout_seconds) as response:
@@ -106,6 +140,14 @@ class AirtableReadOnlyHTTP:
             offset = payload.get("offset")
             if not offset:
                 return records
+
+
+def build_airtable_client() -> AirtableReadOnlyHTTP:
+    token = os.getenv("AIRTABLE_PAT")
+    if not token:
+        raise RuntimeError("AIRTABLE_PAT is required for live BLOOM read access")
+    base_id = os.getenv("BLOOM_AIRTABLE_BASE_ID", "appNhl43NzKfbsTAw")
+    return AirtableReadOnlyHTTP(base_id=base_id, token=token)
 
 
 @dataclass(slots=True)
@@ -195,11 +237,7 @@ class InspectionCalliope:
 
 
 def build_runner() -> RuntimeRunner:
-    token = os.getenv("AIRTABLE_PAT")
-    if not token:
-        raise RuntimeError("AIRTABLE_PAT is required for live read-only Current Scene access")
-    base_id = os.getenv("BLOOM_AIRTABLE_BASE_ID", "appNhl43NzKfbsTAw")
-    repository = CurrentSceneRepository(AirtableReadOnlyHTTP(base_id=base_id, token=token))
+    repository = CurrentSceneRepository(build_airtable_client())
     return RuntimeRunner(
         RunnerDeps(
             repository=repository,
@@ -212,10 +250,17 @@ def build_runner() -> RuntimeRunner:
     )
 
 
+def build_manuscript_repository() -> ManuscriptContextRepository:
+    return ManuscriptContextRepository(build_airtable_client())
+
+
+manuscript_sessions = ManuscriptSessionStore(ttl_seconds=3600)
+
+
 app = FastAPI(
     title="BLOOM / Ama Live Read Runtime",
-    version="0.2.0",
-    description="Authenticated read-only Ama surface backed by BLOOM Current Scene.",
+    version="0.3.0",
+    description="Authenticated read-only Ama surface backed by BLOOM runtime and manuscript authoring evidence.",
 )
 bearer = HTTPBearer(auto_error=False)
 
@@ -256,12 +301,7 @@ def require_auth(credentials: HTTPAuthorizationCredentials | None = Depends(bear
 
 
 def _compact_runtime_trace(trace: Any, request: SceneRequest, status_text: str) -> dict[str, Any]:
-    """Expose only the small proof envelope needed by the GPT Action.
-
-    The internal RuntimeTrace can contain the full ContextPacket and other runtime
-    objects. That is useful inside BLOOM, but unnecessarily large at the external
-    Action boundary. This projection deliberately omits internal object graphs.
-    """
+    """Expose only the small proof envelope needed by the GPT Action."""
     if isinstance(trace, dict):
         return {
             "run_key": str(trace.get("run_key", "AMA-READ-PREVIEW")),
@@ -330,6 +370,9 @@ def health() -> dict[str, Any]:
         "api_version": API_VERSION,
         "airtable_read_configured": bool(os.getenv("AIRTABLE_PAT")),
         "bearer_auth_configured": True,
+        "runtime_preview": True,
+        "manuscript_context": True,
+        "manuscript_review": True,
         "persistence_live": False,
     }
 
@@ -340,6 +383,10 @@ def capabilities() -> dict[str, Any]:
         "api_version": API_VERSION,
         "runtime_preview": True,
         "runtime_commit": False,
+        "manuscript_context": True,
+        "manuscript_review": True,
+        "manuscript_commit": False,
+        "reader_ledger_commit": False,
         "persistence_live": False,
         "raw_sovereign_query_api": False,
         "client_may_supply_authoritative_evidence": False,
@@ -375,4 +422,71 @@ def runtime_preview(body: RuntimePreviewBody) -> dict[str, Any]:
         "status": output.status,
         "text": output.text,
         "trace": _compact_runtime_trace(output.trace, request, output.status),
+    }
+
+
+@app.post("/v1/manuscript/context", dependencies=[Depends(require_auth)])
+def manuscript_context(body: ManuscriptContextBody) -> dict[str, Any]:
+    if body.temporal_scope not in {"CURRENT_SCENE", "HISTORICAL_MANUSCRIPT"}:
+        raise HTTPException(status_code=422, detail="temporal_scope must be CURRENT_SCENE or HISTORICAL_MANUSCRIPT")
+    if not body.character_names and not body.location_names:
+        raise HTTPException(status_code=422, detail="At least one character or location must be requested")
+
+    try:
+        context = build_manuscript_repository().build(
+            arc=body.arc,
+            command=body.command,
+            scene_or_chapter=body.scene_or_chapter,
+            temporal_scope=body.temporal_scope,
+            character_names=tuple(body.character_names),
+            location_names=tuple(body.location_names),
+        )
+    except (RuntimeError, OSError) as exc:
+        raise HTTPException(status_code=503, detail=f"Manuscript evidence service unavailable: {exc}") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    if context.get("status") == "BLOCKED":
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "message": "Manuscript evidence contract is blocked.",
+                "blockers": context.get("blockers", []),
+            },
+        )
+
+    session = manuscript_sessions.issue(context)
+    return {
+        "api_version": API_VERSION,
+        "context_id": session.context_id,
+        "expires_at_epoch": session.expires_at,
+        "context": context,
+        "story_canon_persisted": False,
+        "reader_ledger_committed": False,
+        "clio_invoked": False,
+    }
+
+
+@app.post("/v1/manuscript/review", dependencies=[Depends(require_auth)])
+def manuscript_review(body: ManuscriptReviewBody) -> dict[str, Any]:
+    session = manuscript_sessions.get(body.context_id)
+    if session is None:
+        raise HTTPException(status_code=410, detail="Manuscript context expired or was not issued by this service")
+
+    try:
+        result = review_manuscript(
+            session=session,
+            phase=body.phase,
+            claims=tuple(claim.model_dump() for claim in body.claims),
+            reader_new_subjects=tuple(body.reader_new_subjects),
+            oriented_subjects=tuple(body.oriented_subjects),
+            reader_ledger_commit_requested=body.reader_ledger_commit_requested,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    return {
+        "api_version": API_VERSION,
+        **result,
+        "clio_invoked": False,
     }
