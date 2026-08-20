@@ -186,8 +186,6 @@ class AirtableVisualAuthoritySource:
     def _asset_matches_subject(fields: dict[str, Any], subject: VisualSubjectIdentity) -> bool:
         links = _linked_record_ids(fields.get(ASSET_F["subject_entities"]))
         if links:
-            # Link-first migration rule: once explicit stable links are present,
-            # prose cannot widen the subject set.
             return subject.record_id in links
         subjects = str(fields.get(ASSET_F["subjects"], ""))
         return _mentions(subjects, subject.display_name)
@@ -203,7 +201,6 @@ class AirtableVisualAuthoritySource:
                 continue
             roles = _select_names(fields.get(ASSET_F["authority_roles"]))
             if not roles:
-                # No filename/prose guessing. Curated role assignment is required.
                 continue
             status = _select_name(fields.get(ASSET_F["status"]))
             if status not in APPROVED_ASSET_STATUSES:
@@ -294,6 +291,7 @@ class ApolloVisualAuthorityCompiler:
                 job_key=f"{pack.key}::{index:02d}::{definition.output_type}",
                 arc=request.arc,
                 subject_id=subject.stable_id,
+                subject_record_id=subject.record_id,
                 subject_name=subject.display_name,
                 subject_kind=subject.kind,
                 output_type=definition.output_type,
