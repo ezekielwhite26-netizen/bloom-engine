@@ -97,7 +97,6 @@ class CompiledVisualJob:
     job_key: str
     arc: str
     subject_id: str
-    subject_record_id: str
     subject_name: str
     subject_kind: VisualSubjectKind
     output_type: str
@@ -110,6 +109,9 @@ class CompiledVisualJob:
     open_fields: tuple[str, ...]
     max_iterations: int
     missing_dependencies: tuple[str, ...] = ()
+    # Stable Airtable/Saga Entity record link for durable candidate linkage.
+    # Default keeps deterministic unit-test/fake constructors lightweight.
+    subject_record_id: str = ""
 
     @property
     def ready(self) -> bool:
