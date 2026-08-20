@@ -5,6 +5,7 @@ import json
 import time
 import urllib.parse
 import urllib.request
+import uuid
 from dataclasses import dataclass
 from typing import Any, Protocol
 
@@ -17,6 +18,7 @@ F = {
     "name": "fldPyou5bDkoxqgno",
     "arc": "fldfYhxo2CaqwsUZp",
     "subjects": "fld9BzJ4e9jJl2JDI",
+    "subject_entities": "fldqCp7EF233chehy",
     "type": "fldambDi840eB0cMu",
     "attachment": ATTACHMENT_FIELD,
     "controls": "fldW5ZCmomkkibVaH",
@@ -29,6 +31,7 @@ F = {
     "provenance": "fldlk9bgSKcKyfZu4",
     "created": "fldQ7Shz5Yxnt0Sbw",
     "notes": "fldEBMrKVPlm8Jt1F",
+    "production_slot": "fldrpOM8fkP4GINBs",
 }
 
 
@@ -42,9 +45,9 @@ class AirtableVisualAssetStore:
     """Durable candidate registry using BLOOM's existing Visual Assets table.
 
     The generated image is copied into Airtable before provider delivery URLs
-    expire. The record deliberately leaves approval/reference-strength blank.
-    A system pass only updates Continuity Check; it never sets Approved Anchor
-    or Gold Standard.
+    expire. The record deliberately leaves approval/reference-strength/authority
+    roles blank. A system pass updates only QA metadata; it never creates visual
+    canon authority.
     """
 
     base_id: str
@@ -64,24 +67,24 @@ class AirtableVisualAssetStore:
             return json.loads(response.read().decode("utf-8"))
 
     def _create_candidate_record(self, job: CompiledVisualJob, rendered: RenderedVisual, iteration: int, parent_candidate_id: str | None) -> dict[str, Any]:
-        asset_key = f"AH-VIS-GEN-{int(time.time() * 1000)}-{iteration}"
+        asset_key = f"AH-VIS-GEN-{uuid.uuid4().hex[:16]}-{iteration}"
         parent_text = parent_candidate_id or "; ".join(ref.asset_key for ref in job.references)
         fields: dict[str, Any] = {
             F["key"]: asset_key,
             F["name"]: f"{job.subject_name} — {job.output_type} — Candidate {iteration}",
             F["arc"]: job.arc,
             F["subjects"]: job.subject_name,
+            F["subject_entities"]: [job.subject_record_id],
+            F["production_slot"]: job.output_type,
             F["type"]: "Other",
             F["not_controls"]: "Presentation-only generated candidate. Not authoritative for any visible field unless explicitly approved later.",
             F["parents"]: parent_text,
             F["brief"]: job.prompt,
             F["provenance"]: f"APOLLO Visual Director; renderer={rendered.provider_id}; model={rendered.model}; job={job.job_key}; iteration={iteration}",
             F["created"]: time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-            F["notes"]: "GENERATED candidate. SYSTEM_PASS, if later recorded, is not human approval and is not Gold.",
+            F["notes"]: "GENERATED candidate. Production Slot is operational metadata only. SYSTEM_PASS, if later recorded, is not human approval and is not Gold.",
         }
         if rendered.temporary_url:
-            # Airtable fetches and stores a public direct URL. This is intentionally
-            # done immediately because FLUX delivery URLs are short-lived.
             fields[F["attachment"]] = [{"url": rendered.temporary_url, "filename": f"{asset_key}.png"}]
         table = urllib.parse.quote(VISUAL_ASSETS, safe="")
         return self._request(
@@ -93,9 +96,6 @@ class AirtableVisualAssetStore:
     def _upload_base64(self, record_id: str, asset_key: str, rendered: RenderedVisual) -> dict[str, Any]:
         if not rendered.image_base64:
             raise RuntimeError("NO_BASE64_IMAGE_TO_UPLOAD")
-        # Airtable's direct attachment endpoint accepts base64 file bytes and is
-        # capped below normal attachment limits. GPT Image outputs are expected
-        # to fit; fail clearly rather than truncate if they do not.
         raw = base64.b64decode(rendered.image_base64, validate=True)
         if len(raw) > 5 * 1024 * 1024:
             raise RuntimeError(f"AIRTABLE_DIRECT_UPLOAD_TOO_LARGE:{len(raw)}")
@@ -141,7 +141,11 @@ class AirtableVisualAssetStore:
         self._request(
             f"{self.api_base}/{self.base_id}/{table}/{candidate.asset_record_id}?returnFieldsByFieldId=true",
             method="PATCH",
-            payload={"fields": {F["continuity"]: "Pass", F["findings"]: findings, F["notes"]: "SYSTEM_PASS only. Human approval is still required before APPROVED/GOLD."}},
+            payload={"fields": {
+                F["continuity"]: "Pass",
+                F["findings"]: findings,
+                F["notes"]: "SYSTEM_PASS only. Human approval is still required before APPROVED/GOLD. No APOLLO Authority Role is assigned automatically.",
+            }},
         )
         return PersistedVisualCandidate(
             candidate_id=candidate.candidate_id,
@@ -174,9 +178,18 @@ class InMemoryVisualAssetStore:
         return candidate
 
     def mark_system_pass(self, candidate: PersistedVisualCandidate, findings: str) -> PersistedVisualCandidate:
-        updated = PersistedVisualCandidate(**{**candidate.__dict__, "status": "SYSTEM_PASS"}) if hasattr(candidate, "__dict__") else PersistedVisualCandidate(
-            candidate.candidate_id, candidate.asset_key, candidate.asset_record_id, candidate.job_key, candidate.iteration,
-            candidate.provider_id, candidate.model, candidate.preview_url, candidate.parent_candidate_id, "SYSTEM_PASS", candidate.created_at,
+        updated = PersistedVisualCandidate(
+            candidate.candidate_id,
+            candidate.asset_key,
+            candidate.asset_record_id,
+            candidate.job_key,
+            candidate.iteration,
+            candidate.provider_id,
+            candidate.model,
+            candidate.preview_url,
+            candidate.parent_candidate_id,
+            "SYSTEM_PASS",
+            candidate.created_at,
         )
         self.candidates = [updated if c.candidate_id == candidate.candidate_id else c for c in self.candidates]
         return updated
