@@ -17,7 +17,7 @@ from bloom_engine.apollo.models import (
     VisualSubjectIdentity,
     VisualSubjectKind,
 )
-from bloom_engine.apollo.packs import PACKS_BY_SUBJECT
+from bloom_engine.apollo.packs import PACKS_BY_SUBJECT, generic_character_production_pack
 
 SAGA_ENTITIES = "tblUGacqeNEhBgB30"
 ENTITY_ALIASES = "tbl2Ry6ZRQUwUHcIo"
@@ -51,6 +51,7 @@ ASSET_F = {
     "parent": "fldNXxe3HxnaKbyhF",
     "continuity": "fldxr3taTNYXYAwzN",
     "authority_roles": "fldsHT2et8d6AZosf",
+    "authority_scope": "fldOdVVEwNa7xT0Q6",
     "production_slot": "fldrpOM8fkP4GINBs",
 }
 
@@ -190,14 +191,23 @@ class AirtableVisualAuthoritySource:
         subjects = str(fields.get(ASSET_F["subjects"], ""))
         return _mentions(subjects, subject.display_name)
 
+    @classmethod
+    def _asset_in_authority_scope(cls, fields: dict[str, Any], subject: VisualSubjectIdentity, arc: str) -> bool:
+        scope = _select_name(fields.get(ASSET_F["authority_scope"])) or "SUBJECT"
+        row_arc = str(fields.get(ASSET_F["arc"], "")).strip()
+        if scope == "GLOBAL":
+            return True
+        if scope == "ARC":
+            return not row_arc or row_arc == arc
+        if row_arc and row_arc != arc:
+            return False
+        return cls._asset_matches_subject(fields, subject)
+
     def list_references(self, subject: VisualSubjectIdentity, arc: str) -> tuple[VisualReferenceAuthority, ...]:
         output: list[VisualReferenceAuthority] = []
         for row in self.client.list_all(VISUAL_ASSETS):
             fields = row.get("fields", {})
-            if not self._asset_matches_subject(fields, subject):
-                continue
-            row_arc = str(fields.get(ASSET_F["arc"], "")).strip()
-            if row_arc and row_arc != arc:
+            if not self._asset_in_authority_scope(fields, subject, arc):
                 continue
             roles = _select_names(fields.get(ASSET_F["authority_roles"]))
             if not roles:
@@ -229,6 +239,8 @@ class AirtableVisualAuthoritySource:
         slots: list[str] = []
         for row in self.client.list_all(VISUAL_ASSETS):
             fields = row.get("fields", {})
+            # Production-slot approval is always subject-specific even if an asset
+            # also participates in arc/global style authority.
             if not self._asset_matches_subject(fields, subject):
                 continue
             row_arc = str(fields.get(ASSET_F["arc"], "")).strip()
@@ -247,13 +259,19 @@ class ApolloVisualAuthorityCompiler:
         self.source = source
         self.packs = packs or PACKS_BY_SUBJECT
 
+    def _pack_for_subject(self, subject: VisualSubjectIdentity) -> VisualPackDefinition:
+        explicit = self.packs.get(subject.stable_id)
+        if explicit is not None:
+            return explicit
+        if subject.kind is VisualSubjectKind.CHARACTER:
+            return generic_character_production_pack(subject.stable_id)
+        raise ValueError(f"VISUAL_PACK_NOT_REGISTERED:{subject.stable_id}")
+
     def compile(self, request: VisualJobRequest) -> CompiledVisualRequest:
         subject = self.source.resolve_subject(request.subject_query, request.subject_kind, request.arc)
         if subject is None:
             raise ValueError(f"VISUAL_SUBJECT_NOT_RESOLVED:{request.subject_query}")
-        pack = self.packs.get(subject.stable_id)
-        if pack is None:
-            raise ValueError(f"VISUAL_PACK_NOT_REGISTERED:{subject.stable_id}")
+        pack = self._pack_for_subject(subject)
         references = self.source.list_references(subject, request.arc)
         by_role = {ref.role: ref for ref in references}
         if len(by_role) != len(references):
@@ -282,6 +300,18 @@ class ApolloVisualAuthorityCompiler:
                     missing.append(f"MISSING_ATTACHMENT:{ref.asset_key}")
                 else:
                     selected.append(ref)
+            for role in definition.optional_reference_roles:
+                ref = by_role.get(role)
+                if ref is None:
+                    continue
+                if not ref.has_image:
+                    warnings.append(f"{definition.output_type}: OPTIONAL_MISSING_ATTACHMENT:{ref.asset_key}")
+                    continue
+                selected.append(ref)
+            # Avoid sending the same exact asset twice when curation assigns it
+            # more than one authority role. Its Authoritative For text still
+            # communicates all fields it controls.
+            selected = list({ref.record_id: ref for ref in selected}.values())
             for dep in definition.approved_dependencies:
                 if dep not in approved:
                     missing.append(f"APPROVED_SLOT:{dep}")
