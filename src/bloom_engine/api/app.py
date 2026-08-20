@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+import json
+import os
+import urllib.error
+import urllib.request
 from dataclasses import dataclass
 from hmac import compare_digest
 
@@ -33,6 +37,36 @@ def _assert_preview_only(request: SceneRequest) -> None:
     for runtime_query in request.queries:
         if runtime_query.request.permission_mode != "READ":
             raise RuntimeError("Ama preview boundary produced a non-read sovereign query")
+
+
+def _proxy_json(*, method: str, path: str, bearer_token: str, body: dict | None = None) -> dict:
+    upstream = os.getenv("AMA_UPSTREAM_URL", "").rstrip("/")
+    if not upstream:
+        raise RuntimeError("AMA_UPSTREAM_URL is not configured")
+
+    payload = None if body is None else json.dumps(body).encode("utf-8")
+    request = urllib.request.Request(
+        f"{upstream}{path}",
+        data=payload,
+        method=method,
+        headers={
+            "Authorization": f"Bearer {bearer_token}",
+            "Accept": "application/json",
+            "Content-Type": "application/json",
+            "User-Agent": "BLOOM-Ama-Preview-Bridge/0.1",
+        },
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=25) as response:
+            return json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        detail = exc.read().decode("utf-8", errors="replace")
+        raise HTTPException(status_code=exc.code, detail=f"Upstream BLOOM rejected request: {detail}") from exc
+    except urllib.error.URLError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=f"Upstream BLOOM connection failed: {exc.reason}",
+        ) from exc
 
 
 def create_app(*, services: AmaApiServices, bearer_token: str) -> FastAPI:
@@ -74,7 +108,12 @@ def create_app(*, services: AmaApiServices, bearer_token: str) -> FastAPI:
 
     @app.get("/health")
     def health() -> dict[str, str]:
-        return {"status": "ok", "service": "bloom-engine", "api_version": API_VERSION}
+        return {
+            "status": "ok",
+            "service": "bloom-engine",
+            "api_version": API_VERSION,
+            "upstream_mode": "live-read-proxy" if os.getenv("AMA_UPSTREAM_URL") else "local-runtime",
+        }
 
     @app.get(
         "/v1/capabilities",
@@ -82,6 +121,12 @@ def create_app(*, services: AmaApiServices, bearer_token: str) -> FastAPI:
         dependencies=[Depends(require_auth)],
     )
     def capabilities() -> CapabilityView:
+        if os.getenv("AMA_UPSTREAM_URL"):
+            return CapabilityView(**_proxy_json(
+                method="GET",
+                path="/v1/capabilities",
+                bearer_token=bearer_token,
+            ))
         return CapabilityView(
             api_version=API_VERSION,
             runtime_preview=True,
@@ -94,6 +139,14 @@ def create_app(*, services: AmaApiServices, bearer_token: str) -> FastAPI:
 
     @app.post("/v1/runtime/preview", dependencies=[Depends(require_auth)])
     def runtime_preview(body: RuntimePreviewBody) -> dict:
+        if os.getenv("AMA_UPSTREAM_URL"):
+            return _proxy_json(
+                method="POST",
+                path="/v1/runtime/preview",
+                bearer_token=bearer_token,
+                body=body.model_dump(mode="json"),
+            )
+
         try:
             request = services.request_builder.build_preview(body)
             _assert_preview_only(request)
