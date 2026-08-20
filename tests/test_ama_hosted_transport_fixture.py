@@ -1,5 +1,10 @@
 from __future__ import annotations
 
+import json
+import os
+import urllib.request
+from types import SimpleNamespace
+
 from fastapi.testclient import TestClient
 
 from bloom_engine.api import AmaApiServices, RuntimePreviewBody, create_app
@@ -32,11 +37,47 @@ class FixtureBuilder:
 
 
 class FixtureRunner:
+    """Local fixture by default; optional hosted bridge for the known-good GPT domain.
+
+    Render's ama-runtime-preview service imports this class directly. When
+    AMA_LIVE_READ_BACKEND_URL is present, the class becomes a narrow read-only
+    bridge to the live Current Scene backend. Tests do not set that environment
+    variable, so CI continues exercising the deterministic fixture path.
+    """
+
     def __init__(self):
         self.calls: list[SceneRequest] = []
 
     def run(self, request: SceneRequest) -> RunnerOutput:
         self.calls.append(request)
+        backend = os.getenv("AMA_LIVE_READ_BACKEND_URL", "").rstrip("/")
+        if backend:
+            token = os.environ["BLOOM_API_BEARER_TOKEN"]
+            payload = json.dumps(
+                {
+                    "arc": request.arc,
+                    "command": request.command,
+                    "mode": "DRY_RUN",
+                }
+            ).encode("utf-8")
+            outbound = urllib.request.Request(
+                f"{backend}/v1/runtime/preview",
+                data=payload,
+                method="POST",
+                headers={
+                    "Authorization": f"Bearer {token}",
+                    "Content-Type": "application/json",
+                    "User-Agent": "BLOOM-Ama-ReadOnly-Bridge/0.1",
+                },
+            )
+            with urllib.request.urlopen(outbound, timeout=20) as response:
+                result = json.loads(response.read().decode("utf-8"))
+            return SimpleNamespace(
+                status=result.get("status", "FAILED"),
+                text=result.get("text", ""),
+                trace=result.get("trace"),
+            )
+
         trace = RuntimeTrace(
             run_key="RUN::HOSTED-FIXTURE",
             request=request,
