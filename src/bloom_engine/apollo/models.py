@@ -68,6 +68,10 @@ class VisualJobRequest:
     request_kind: VisualRequestKind
     output_type: str | None = None
     max_iterations: int = 5
+    # Paid renderer API calls, including fallback calls. The conservative default
+    # is enough for roughly one full first-pass character pack, not dozens of
+    # blind repair attempts.
+    max_renderer_calls: int = 12
     authorization_token: str | None = None
 
 
@@ -194,6 +198,8 @@ class VisualRunOutput:
     jobs: tuple[VisualJobRun, ...]
     warnings: tuple[str, ...]
     requires_human_approval: bool = True
+    renderer_calls_used: int = 0
+    renderer_call_limit: int = 0
 
     def to_public_dict(self) -> dict[str, Any]:
         return {
@@ -202,6 +208,8 @@ class VisualRunOutput:
             "subject_name": self.subject_name,
             "status": self.status.value,
             "requires_human_approval": True,
+            "renderer_calls_used": self.renderer_calls_used,
+            "renderer_call_limit": self.renderer_call_limit,
             "warnings": list(self.warnings),
             "jobs": [
                 {
