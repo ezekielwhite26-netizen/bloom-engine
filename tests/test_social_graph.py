@@ -20,6 +20,14 @@ def _channel() -> EncounterChannel:
     )
 
 
+def _presence_evidence(*, eunomia=EncounterEvidenceState.KNOWN_TRUE, chronos=EncounterEvidenceState.KNOWN_TRUE, atlas=EncounterEvidenceState.KNOWN_TRUE):
+    return (
+        EncounterEvidence("EUNOMIA", "institution.membership.academy", eunomia),
+        EncounterEvidence("CHRONOS", "schedule.class.third_period", chronos),
+        EncounterEvidence("ATLAS", "location.shared.classroom", atlas),
+    )
+
+
 def test_supported_relationship_candidate_does_not_become_established():
     edge = RelationshipEdge(
         edge_key="REL-TEST-001",
@@ -34,39 +42,76 @@ def test_supported_relationship_candidate_does_not_become_established():
 
 
 def test_relationship_alone_cannot_establish_encounter_presence():
-    assert evaluate_encounter_channel(_channel(), ()) is EncounterDecision.UNKNOWN
+    evidence = (
+        EncounterEvidence("HERA", "relationship.familiarity.friend", EncounterEvidenceState.KNOWN_TRUE),
+    )
+    assert evaluate_encounter_channel(_channel(), evidence) is EncounterDecision.UNKNOWN
 
 
 def test_unknown_schedule_fails_closed_even_when_other_prerequisites_are_known():
+    evidence = _presence_evidence(chronos=EncounterEvidenceState.UNKNOWN)
+    assert evaluate_encounter_channel(_channel(), evidence) is EncounterDecision.UNKNOWN
+
+
+def test_known_false_location_blocks_candidate():
+    evidence = _presence_evidence(atlas=EncounterEvidenceState.KNOWN_FALSE)
+    assert evaluate_encounter_channel(_channel(), evidence) is EncounterDecision.CANNOT_ARRIVE
+
+
+def test_known_school_time_and_place_make_channel_eligible():
+    assert evaluate_encounter_channel(_channel(), _presence_evidence()) is EncounterDecision.CAN_ARRIVE
+
+
+def test_not_applicable_is_not_positive_evidence():
     evidence = (
-        EncounterEvidence("EUNOMIA", "institution.membership.academy", EncounterEvidenceState.KNOWN_TRUE),
-        EncounterEvidence("CHRONOS", "schedule.class.third_period", EncounterEvidenceState.UNKNOWN),
+        EncounterEvidence("EUNOMIA", "institution.membership.academy", EncounterEvidenceState.NOT_APPLICABLE),
+        EncounterEvidence("CHRONOS", "schedule.class.third_period", EncounterEvidenceState.KNOWN_TRUE),
         EncounterEvidence("ATLAS", "location.shared.classroom", EncounterEvidenceState.KNOWN_TRUE),
     )
     assert evaluate_encounter_channel(_channel(), evidence) is EncounterDecision.UNKNOWN
 
 
-def test_known_false_location_blocks_candidate():
+def test_missing_chronos_cannot_be_compensated_by_relationship_or_location():
     evidence = (
         EncounterEvidence("EUNOMIA", "institution.membership.academy", EncounterEvidenceState.KNOWN_TRUE),
-        EncounterEvidence("CHRONOS", "schedule.class.third_period", EncounterEvidenceState.KNOWN_TRUE),
-        EncounterEvidence("ATLAS", "location.shared.classroom", EncounterEvidenceState.KNOWN_FALSE),
+        EncounterEvidence("ATLAS", "location.academy.same_site", EncounterEvidenceState.KNOWN_TRUE),
+        EncounterEvidence("HERA", "relationship.familiarity.friend", EncounterEvidenceState.KNOWN_TRUE),
+    )
+    assert evaluate_encounter_channel(_channel(), evidence) is EncounterDecision.UNKNOWN
+
+
+def test_missing_atlas_cannot_be_compensated_by_known_membership_and_schedule():
+    evidence = (
+        EncounterEvidence("EUNOMIA", "organization.student_council.events_membership", EncounterEvidenceState.KNOWN_TRUE),
+        EncounterEvidence("CHRONOS", "schedule.events_committee.overlap", EncounterEvidenceState.KNOWN_TRUE),
+    )
+    assert evaluate_encounter_channel(_channel(), evidence) is EncounterDecision.UNKNOWN
+
+
+def test_organization_existence_does_not_equal_actor_presence():
+    evidence = (
+        EncounterEvidence("EUNOMIA", "organization.student_council.exists", EncounterEvidenceState.KNOWN_TRUE),
+        EncounterEvidence("CHRONOS", "schedule.events_committee.overlap", EncounterEvidenceState.UNKNOWN),
+        EncounterEvidence("ATLAS", "location.academy.reachable", EncounterEvidenceState.KNOWN_TRUE),
+    )
+    assert evaluate_encounter_channel(_channel(), evidence) is EncounterDecision.UNKNOWN
+
+
+def test_optional_refiners_cannot_override_false_location():
+    evidence = _presence_evidence(atlas=EncounterEvidenceState.KNOWN_FALSE) + (
+        EncounterEvidence("HERA", "relationship.familiarity.friend", EncounterEvidenceState.KNOWN_TRUE),
+        EncounterEvidence("MNEMOSYNE", "inclination.wants_to_talk", EncounterEvidenceState.KNOWN_TRUE),
+        EncounterEvidence("HERMES", "communication.reason_to_contact", EncounterEvidenceState.KNOWN_TRUE),
     )
     assert evaluate_encounter_channel(_channel(), evidence) is EncounterDecision.CANNOT_ARRIVE
 
 
-def test_known_school_time_and_place_make_channel_eligible():
+def test_athena_evidence_cannot_make_an_ineligible_candidate_present():
     evidence = (
         EncounterEvidence("EUNOMIA", "institution.membership.academy", EncounterEvidenceState.KNOWN_TRUE),
-        EncounterEvidence("CHRONOS", "schedule.class.third_period", EncounterEvidenceState.KNOWN_TRUE),
-        EncounterEvidence("ATLAS", "location.shared.classroom", EncounterEvidenceState.KNOWN_TRUE),
-    )
-    assert evaluate_encounter_channel(_channel(), evidence) is EncounterDecision.CAN_ARRIVE
-
-
-def test_not_applicable_is_not_positive_evidence():
-    evidence = (
-        EncounterEvidence("HERA", "relationship.familiarity.peer", EncounterEvidenceState.NOT_APPLICABLE),
+        EncounterEvidence("CHRONOS", "schedule.shared_window", EncounterEvidenceState.UNKNOWN),
+        EncounterEvidence("ATLAS", "location.academy.same_site", EncounterEvidenceState.KNOWN_TRUE),
+        EncounterEvidence("ATHENA", "discretion.select_candidate", EncounterEvidenceState.KNOWN_TRUE),
     )
     assert evaluate_encounter_channel(_channel(), evidence) is EncounterDecision.UNKNOWN
 
