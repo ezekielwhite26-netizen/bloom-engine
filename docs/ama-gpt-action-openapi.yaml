@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: BLOOM / Ama Read-Only Actions
-  version: 0.3.1
+  version: 0.3.2
   description: >-
     Private read-only Action surface for Ama. It exposes BLOOM capability inspection,
     current-state preview, manuscript evidence context, and ADRASTEIA review only.
@@ -22,8 +22,7 @@ paths:
           content:
             application/json:
               schema:
-                type: object
-                additionalProperties: true
+                $ref: '#/components/schemas/AmaReadResponse'
         '401':
           description: Missing or invalid bearer credentials
 
@@ -31,8 +30,7 @@ paths:
     post:
       operationId: inspectAsterHollowCurrentState
       summary: Inspect the active Aster Hollow scene
-      description: >-
-        Read the verified active scene in DRY_RUN mode without changing state.
+      description: Read the verified active scene in DRY_RUN mode without changing state.
       x-openai-isConsequential: false
       security:
         - bearerAuth: []
@@ -71,8 +69,7 @@ paths:
           content:
             application/json:
               schema:
-                type: object
-                additionalProperties: true
+                $ref: '#/components/schemas/AmaReadResponse'
         '401':
           description: Missing or invalid bearer credentials
         '422':
@@ -97,12 +94,7 @@ paths:
             schema:
               type: object
               additionalProperties: false
-              required:
-                - arc
-                - command
-                - scene_or_chapter
-                - character_names
-                - location_names
+              required: [arc, command, scene_or_chapter, character_names, location_names]
               properties:
                 arc:
                   type: string
@@ -134,8 +126,7 @@ paths:
           content:
             application/json:
               schema:
-                type: object
-                additionalProperties: true
+                $ref: '#/components/schemas/AmaReadResponse'
         '401':
           description: Missing or invalid bearer credentials
         '422':
@@ -197,8 +188,7 @@ paths:
           content:
             application/json:
               schema:
-                type: object
-                additionalProperties: true
+                $ref: '#/components/schemas/AmaReadResponse'
         '401':
           description: Missing or invalid bearer credentials
         '410':
@@ -206,6 +196,14 @@ paths:
         '422':
           description: Invalid review phase or body
 components:
+  schemas:
+    AmaReadResponse:
+      type: object
+      properties:
+        api_version:
+          type: string
+          description: Hosted Ama API version returned by the service.
+      additionalProperties: true
   securitySchemes:
     bearerAuth:
       type: http
