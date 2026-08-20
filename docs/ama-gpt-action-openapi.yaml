@@ -1,20 +1,19 @@
 openapi: 3.1.0
 info:
-  title: Ama BLOOM Runtime Action
-  version: 0.3.0
+  title: BLOOM / Ama Read-Only Actions
+  version: 0.3.1
   description: >-
-    Read-only Custom GPT Action surface for Ama. This API exposes verified BLOOM runtime
-    context plus bounded manuscript-authoring evidence and ADRASTEIA review. It cannot
-    persist story canon, commit reader-ledger state, mint write authority, or rewrite prose.
+    Private read-only Action surface for Ama. It exposes BLOOM capability inspection,
+    current-state preview, manuscript evidence context, and ADRASTEIA review only.
 servers:
   - url: https://ama-runtime.onrender.com
 paths:
   /v1/capabilities:
     get:
       operationId: getAmaRuntimeCapabilities
-      summary: Check what the hosted Ama runtime can safely do
-      description: >-
-        Verify runtime and manuscript capabilities before promising an operation.
+      summary: Check hosted Ama runtime capabilities
+      description: Read the capability flags exposed by the hosted Ama runtime.
+      x-openai-isConsequential: false
       security:
         - bearerAuth: []
       responses:
@@ -31,10 +30,10 @@ paths:
   /v1/runtime/preview:
     post:
       operationId: inspectAsterHollowCurrentState
-      summary: Inspect the verified active Aster Hollow scene without changing anything
+      summary: Inspect the active Aster Hollow scene
       description: >-
-        Use when the request depends on the current persisted Aster Hollow scene pointer/state.
-        DRY_RUN and PREVIEW only. Treat returned text and trace as BLOOM runtime evidence.
+        Read the verified active scene in DRY_RUN mode without changing state.
+      x-openai-isConsequential: false
       security:
         - bearerAuth: []
       requestBody:
@@ -77,20 +76,18 @@ paths:
         '401':
           description: Missing or invalid bearer credentials
         '422':
-          description: Request is outside the read-only runtime scope
+          description: Request is outside the preview scope
         '503':
-          description: BLOOM safety boundary rejected the request or live state was unavailable
+          description: Live BLOOM state was unavailable
 
   /v1/manuscript/context:
     post:
       operationId: prepareAmaManuscriptContext
-      summary: Prepare a bounded BLOOM manuscript evidence packet
+      summary: Prepare manuscript evidence context
       description: >-
-        Use before drafting or revising reader-facing Aster Hollow manuscript prose. The service
-        reads existing BLOOM authoring/canon evidence, approved Gold and committed reader-ledger
-        state, then issues a temporary context id. HISTORICAL_MANUSCRIPT mode intentionally omits
-        later mutable state that could leak backward into an earlier chapter. This endpoint never
-        calls CLIO and never commits story canon or reader state.
+        Read bounded BLOOM evidence for an Aster Hollow manuscript scene and issue a
+        temporary context id. HISTORICAL_MANUSCRIPT omits later mutable state.
+      x-openai-isConsequential: false
       security:
         - bearerAuth: []
       requestBody:
@@ -125,15 +122,15 @@ paths:
                   type: array
                   items:
                     type: string
-                  description: Exact canonical character names required for the requested prose.
+                  description: Exact canonical character names needed for the scene.
                 location_names:
                   type: array
                   items:
                     type: string
-                  description: Exact canonical location names required for the requested prose.
+                  description: Exact canonical location names needed for the scene.
       responses:
         '200':
-          description: Issued read-only manuscript context and evidence keys
+          description: Issued manuscript context and evidence keys
           content:
             application/json:
               schema:
@@ -142,20 +139,18 @@ paths:
         '401':
           description: Missing or invalid bearer credentials
         '422':
-          description: Invalid request or unresolved exact identity/evidence contract
+          description: Invalid request or unresolved exact identity
         '503':
           description: Live BLOOM authoring evidence was unavailable
 
   /v1/manuscript/review:
     post:
       operationId: reviewAmaManuscriptDraft
-      summary: Run ADRASTEIA review against an issued manuscript context
+      summary: Review a manuscript draft with ADRASTEIA
       description: >-
-        After CALLIOPE/Ama drafts or revises prose, declare only the factual/agency claims the draft
-        actually makes using evidence keys from the issued manuscript context. ADRASTEIA diagnoses
-        unsupported canon, protected player commitments, reader-orientation gaps, and forbidden
-        reader-ledger commit attempts. ADRASTEIA never returns replacement prose; CALLIOPE performs
-        any revision. This endpoint never calls CLIO or persists story/reader state.
+        Check declared draft claims against an issued manuscript context and return
+        diagnostic findings for CALLIOPE/Ama to use during revision.
+      x-openai-isConsequential: false
       security:
         - bearerAuth: []
       requestBody:
@@ -182,7 +177,7 @@ paths:
                     properties:
                       kind:
                         type: string
-                        description: FACT or PLAYER_COMMITMENT. Other claim labels are accepted but receive the same evidence-key gate.
+                        enum: [FACT, PLAYER_COMMITMENT]
                       key:
                         type: string
                         description: Evidence key issued by prepareAmaManuscriptContext.
@@ -196,12 +191,9 @@ paths:
                   items:
                     type: string
                   default: []
-                reader_ledger_commit_requested:
-                  type: boolean
-                  default: false
       responses:
         '200':
-          description: ADRASTEIA findings and pass/block status; never replacement prose
+          description: ADRASTEIA review findings and pass/block status
           content:
             application/json:
               schema:
