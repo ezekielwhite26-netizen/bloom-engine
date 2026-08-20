@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import hashlib
 import json
+import logging
 import os
 import urllib.parse
 import urllib.request
@@ -38,6 +40,18 @@ SCENE_F = {
     "last_beat": "fldO8KBpPV8DT1m4m",
     "guardrails": "fldJXyTVX7ejF67Yy",
 }
+
+logger = logging.getLogger("uvicorn.error")
+
+
+def _token_fingerprint(value: str | None) -> str:
+    """Return a non-secret fingerprint for auth diagnostics.
+
+    Only the first 12 hex chars of SHA-256 are logged. The raw credential is never logged.
+    """
+    if not value:
+        return "NONE"
+    return hashlib.sha256(value.encode("utf-8")).hexdigest()[:12]
 
 
 class RuntimePreviewBody(BaseModel):
@@ -198,10 +212,37 @@ bearer = HTTPBearer(auto_error=False)
 
 def require_auth(credentials: HTTPAuthorizationCredentials | None = Depends(bearer)) -> None:
     expected = os.getenv("BLOOM_API_BEARER_TOKEN")
+    received = credentials.credentials if credentials is not None else None
+    scheme = credentials.scheme if credentials is not None else None
+
     if not expected or credentials is None or credentials.scheme.lower() != "bearer":
+        logger.warning(
+            "AMA_AUTH_DIAG result=missing expected_configured=%s expected_len=%s expected_fp=%s received_present=%s scheme=%s received_len=%s received_fp=%s",
+            bool(expected),
+            len(expected) if expected else 0,
+            _token_fingerprint(expected),
+            bool(received),
+            scheme or "NONE",
+            len(received) if received else 0,
+            _token_fingerprint(received),
+        )
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Missing bearer credentials")
-    if not compare_digest(credentials.credentials, expected):
+
+    if not compare_digest(received, expected):
+        logger.warning(
+            "AMA_AUTH_DIAG result=mismatch expected_len=%s expected_fp=%s received_len=%s received_fp=%s",
+            len(expected),
+            _token_fingerprint(expected),
+            len(received),
+            _token_fingerprint(received),
+        )
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid bearer credentials")
+
+    logger.info(
+        "AMA_AUTH_DIAG result=match token_len=%s token_fp=%s",
+        len(expected),
+        _token_fingerprint(expected),
+    )
 
 
 @app.get("/health")
@@ -211,6 +252,7 @@ def health() -> dict[str, Any]:
         "service": "ama-runtime-live-read",
         "api_version": API_VERSION,
         "airtable_read_configured": bool(os.getenv("AIRTABLE_PAT")),
+        "bearer_auth_configured": bool(os.getenv("BLOOM_API_BEARER_TOKEN")),
         "persistence_live": False,
     }
 
