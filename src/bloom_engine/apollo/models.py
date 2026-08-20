@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from enum import Enum
-from typing import Any, Mapping, Sequence
+from typing import Any
 
 
 class VisualSubjectKind(str, Enum):
@@ -97,6 +97,7 @@ class CompiledVisualJob:
     job_key: str
     arc: str
     subject_id: str
+    subject_record_id: str
     subject_name: str
     subject_kind: VisualSubjectKind
     output_type: str
