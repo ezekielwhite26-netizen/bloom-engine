@@ -130,6 +130,28 @@ def _execute(job_id: str, request: VisualJobRequest) -> None:
         store.fail(job_id, error=f"{type(exc).__name__}:{exc}")
 
 
+@router.get("/capabilities")
+def visual_capabilities() -> dict[str, Any]:
+    airtable = bool(os.getenv("AIRTABLE_PAT"))
+    flux = bool(os.getenv("BFL_API_KEY"))
+    openai = bool(os.getenv("OPENAI_API_KEY"))
+    return {
+        "visual_plan": airtable,
+        "visual_generate_endpoint": True,
+        "visual_generate_configured": airtable and flux and openai,
+        "durable_job_registry": airtable,
+        "candidate_storage": "BLOOM Visual Assets" if airtable else None,
+        "primary_renderer": "flux-2-pro",
+        "repair_renderer": "gpt-image-2-2026-04-21",
+        "critic": "gpt-5.6",
+        "explicit_current_request_generation_authorization_required": True,
+        "explicit_spend_confirmation_required": True,
+        "system_pass_requires_human_approval": True,
+        "automatic_gold_promotion": False,
+        "live_deployment_claimed": False,
+    }
+
+
 @router.post("/plan")
 def visual_plan(body: VisualPlanBody) -> dict[str, Any]:
     """Compile APOLLO authority and coverage without generating or spending."""
