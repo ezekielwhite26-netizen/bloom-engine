@@ -41,6 +41,7 @@ ASSET_F = {
     "name": "fldPyou5bDkoxqgno",
     "arc": "fldfYhxo2CaqwsUZp",
     "subjects": "fld9BzJ4e9jJl2JDI",
+    "subject_entities": "fldqCp7EF233chehy",
     "type": "fldambDi840eB0cMu",
     "attachment": "fld0cB8AomF9eAFHs",
     "status": "fldvKWE2Sc2KyJ1zB",
@@ -49,15 +50,11 @@ ASSET_F = {
     "not_controls": "fldR8BHiNwbZ53lFV",
     "parent": "fldNXxe3HxnaKbyhF",
     "continuity": "fldxr3taTNYXYAwzN",
+    "authority_roles": "fldsHT2et8d6AZosf",
+    "production_slot": "fldrpOM8fkP4GINBs",
 }
 
-# These roles are explicit migration mappings for existing approved Florence assets.
-# Future subjects should gain a first-class role field rather than rely on guessing.
-ROLE_BY_ASSET_KEY = {
-    "AH-VA-FLO-001": "FACE_GOLD",
-    "AH-VA-FLO-002": "FRONT_BODY_GOLD",
-    "AH-VA-FLO-003": "REAR_HAIR_BODY_GOLD",
-}
+APPROVED_ASSET_STATUSES = {"Approved Anchor", "Approved Secondary"}
 
 
 def _norm(value: str) -> str:
@@ -80,6 +77,37 @@ def _mentions(query: str, candidate: str) -> bool:
     if not c:
         return False
     return re.search(rf"(?<![\w]){re.escape(c)}(?![\w])", q) is not None
+
+
+def _select_name(value: Any) -> str:
+    if isinstance(value, dict):
+        return str(value.get("name") or "").strip()
+    return str(value or "").strip()
+
+
+def _select_names(value: Any) -> tuple[str, ...]:
+    if not isinstance(value, list):
+        return ()
+    names: list[str] = []
+    for item in value:
+        name = _select_name(item)
+        if name:
+            names.append(name)
+    return tuple(names)
+
+
+def _linked_record_ids(value: Any) -> tuple[str, ...]:
+    if not isinstance(value, list):
+        return ()
+    ids: list[str] = []
+    for item in value:
+        if isinstance(item, str) and item.startswith("rec"):
+            ids.append(item)
+        elif isinstance(item, dict):
+            candidate = str(item.get("id") or "")
+            if candidate.startswith("rec"):
+                ids.append(candidate)
+    return tuple(ids)
 
 
 @dataclass(slots=True)
@@ -110,7 +138,7 @@ class AirtableVisualHTTP:
 class VisualAuthoritySource(Protocol):
     def resolve_subject(self, query: str, kind: VisualSubjectKind, arc: str) -> VisualSubjectIdentity | None: ...
     def list_references(self, subject: VisualSubjectIdentity, arc: str) -> tuple[VisualReferenceAuthority, ...]: ...
-    def approved_slots(self, subject_id: str) -> tuple[str, ...]: ...
+    def approved_slots(self, subject: VisualSubjectIdentity, arc: str) -> tuple[str, ...]: ...
 
 
 class AirtableVisualAuthoritySource:
@@ -139,7 +167,7 @@ class AirtableVisualAuthoritySource:
             fields = row.get("fields", {})
             key = str(fields.get(ENTITY_F["key"], "")).strip()
             name = str(fields.get(ENTITY_F["name"], "")).strip()
-            entity_type = str(fields.get(ENTITY_F["type"], "")).strip()
+            entity_type = _select_name(fields.get(ENTITY_F["type"]))
             row_arc = str(fields.get(ENTITY_F["arc"], "")).strip()
             if entity_type != expected_type or (row_arc and row_arc != arc):
                 continue
@@ -154,42 +182,67 @@ class AirtableVisualAuthoritySource:
             raise ValueError(f"AMBIGUOUS_VISUAL_SUBJECT:{sorted(unique)}")
         return next(iter(unique.values()))
 
+    @staticmethod
+    def _asset_matches_subject(fields: dict[str, Any], subject: VisualSubjectIdentity) -> bool:
+        links = _linked_record_ids(fields.get(ASSET_F["subject_entities"]))
+        if links:
+            # Link-first migration rule: once explicit stable links are present,
+            # prose cannot widen the subject set.
+            return subject.record_id in links
+        subjects = str(fields.get(ASSET_F["subjects"], ""))
+        return _mentions(subjects, subject.display_name)
+
     def list_references(self, subject: VisualSubjectIdentity, arc: str) -> tuple[VisualReferenceAuthority, ...]:
         output: list[VisualReferenceAuthority] = []
         for row in self.client.list_all(VISUAL_ASSETS):
             fields = row.get("fields", {})
-            key = str(fields.get(ASSET_F["key"], "")).strip()
-            role = ROLE_BY_ASSET_KEY.get(key)
-            if not role:
-                continue
-            subjects = str(fields.get(ASSET_F["subjects"], ""))
-            if not _mentions(subjects, subject.display_name):
+            if not self._asset_matches_subject(fields, subject):
                 continue
             row_arc = str(fields.get(ASSET_F["arc"], "")).strip()
             if row_arc and row_arc != arc:
                 continue
+            roles = _select_names(fields.get(ASSET_F["authority_roles"]))
+            if not roles:
+                # No filename/prose guessing. Curated role assignment is required.
+                continue
+            status = _select_name(fields.get(ASSET_F["status"]))
+            if status not in APPROVED_ASSET_STATUSES:
+                continue
+            key = str(fields.get(ASSET_F["key"], "")).strip()
             attachments = fields.get(ASSET_F["attachment"]) or []
             first = attachments[0] if isinstance(attachments, list) and attachments else {}
-            output.append(VisualReferenceAuthority(
-                asset_key=key,
-                asset_name=str(fields.get(ASSET_F["name"], key)),
-                subject_name=subject.display_name,
-                role=role,
-                uri=str(first.get("url", "")).strip() or None,
-                controls=_split_lines(fields.get(ASSET_F["controls"])),
-                does_not_control=_split_lines(fields.get(ASSET_F["not_controls"])),
-                status=str(fields.get(ASSET_F["status"], "")),
-                reference_strength=str(fields.get(ASSET_F["strength"], "")),
-                record_id=str(row.get("id", "")),
-                width=int(first["width"]) if isinstance(first, dict) and first.get("width") else None,
-                height=int(first["height"]) if isinstance(first, dict) and first.get("height") else None,
-            ))
+            for role in roles:
+                output.append(VisualReferenceAuthority(
+                    asset_key=key,
+                    asset_name=str(fields.get(ASSET_F["name"], key)),
+                    subject_name=subject.display_name,
+                    role=role,
+                    uri=str(first.get("url", "")).strip() or None,
+                    controls=_split_lines(fields.get(ASSET_F["controls"])),
+                    does_not_control=_split_lines(fields.get(ASSET_F["not_controls"])),
+                    status=status,
+                    reference_strength=_select_name(fields.get(ASSET_F["strength"])),
+                    record_id=str(row.get("id", "")),
+                    width=int(first["width"]) if isinstance(first, dict) and first.get("width") else None,
+                    height=int(first["height"]) if isinstance(first, dict) and first.get("height") else None,
+                ))
         return tuple(output)
 
-    def approved_slots(self, subject_id: str) -> tuple[str, ...]:
-        # Visual Assets does not yet have a first-class production-slot field.
-        # Fail closed rather than infer approval from filenames or prose.
-        return ()
+    def approved_slots(self, subject: VisualSubjectIdentity, arc: str) -> tuple[str, ...]:
+        slots: list[str] = []
+        for row in self.client.list_all(VISUAL_ASSETS):
+            fields = row.get("fields", {})
+            if not self._asset_matches_subject(fields, subject):
+                continue
+            row_arc = str(fields.get(ASSET_F["arc"], "")).strip()
+            if row_arc and row_arc != arc:
+                continue
+            if _select_name(fields.get(ASSET_F["status"])) not in APPROVED_ASSET_STATUSES:
+                continue
+            slot = str(fields.get(ASSET_F["production_slot"], "")).strip()
+            if slot:
+                slots.append(slot)
+        return tuple(dict.fromkeys(slots))
 
 
 class ApolloVisualAuthorityCompiler:
@@ -207,8 +260,9 @@ class ApolloVisualAuthorityCompiler:
         references = self.source.list_references(subject, request.arc)
         by_role = {ref.role: ref for ref in references}
         if len(by_role) != len(references):
-            raise ValueError("AMBIGUOUS_VISUAL_AUTHORITY_ROLE")
-        approved = set(self.source.approved_slots(subject.stable_id))
+            duplicated = sorted({ref.role for ref in references if sum(1 for x in references if x.role == ref.role) > 1})
+            raise ValueError(f"AMBIGUOUS_VISUAL_AUTHORITY_ROLE:{duplicated}")
+        approved = set(self.source.approved_slots(subject, request.arc))
 
         definitions = list(pack.jobs)
         if request.request_kind.value == "SINGLE_ASSET":
