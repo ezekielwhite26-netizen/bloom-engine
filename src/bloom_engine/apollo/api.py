@@ -88,15 +88,8 @@ def _normalize_secret(value: str | None) -> str:
     )
 
 
-def _require_reference_ingest_admin(
-    token: str | None = Header(default=None, alias="X-BLOOM-APOLLO-ADMIN"),
-) -> None:
-    """Require a separate operator secret for reference-byte ingestion.
-
-    The normal Ama bearer is intentionally insufficient. This keeps the user-
-    facing visual Action capable of planning/generation without silently gaining
-    permission to alter the durable reference library.
-    """
+def _require_reference_ingest_admin(token: str | None) -> None:
+    """Require a separate operator secret for reference-byte ingestion."""
 
     configured_hash = (os.getenv("BLOOM_APOLLO_ADMIN_TOKEN_SHA256") or "").strip().lower()
     if not configured_hash:
@@ -355,24 +348,13 @@ def visual_job_status(job_id: str) -> dict[str, Any]:
     }
 
 
-@router.post("/admin/ingest-reference", include_in_schema=False)
-def visual_admin_ingest_reference(
-    body: VisualReferenceIngestBody,
-    _admin: None = _require_reference_ingest_admin,
-) -> dict[str, Any]:
-    """Operator-only reference-byte ingestion; never changes authority metadata."""
-
-    # FastAPI dependency injection cannot be expressed by assigning the function
-    # object as a plain default, so call it explicitly only when tests invoke the
-    # handler directly. HTTP mounting uses the wrapper route defined below.
-    raise RuntimeError("DIRECT_HANDLER_NOT_EXPOSED")
-
-
 @router.post("/admin/reference-attachment", include_in_schema=False)
 def visual_admin_reference_attachment(
     body: VisualReferenceIngestBody,
     x_bloom_apollo_admin: str | None = Header(default=None, alias="X-BLOOM-APOLLO-ADMIN"),
 ) -> dict[str, Any]:
+    """Operator-only reference-byte ingestion; never changes authority metadata."""
+
     _require_reference_ingest_admin(x_bloom_apollo_admin)
     try:
         result = _reference_ingestor().ingest(
