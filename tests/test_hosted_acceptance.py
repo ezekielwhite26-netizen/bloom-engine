@@ -3,6 +3,7 @@ import copy
 import pytest
 
 from bloom_engine.hosted_acceptance import (
+    AirtableHTTP,
     CURRENT_SCENE_TABLE,
     EVENTS_TABLE,
     HOSTED_DRY_RUN_KEY,
@@ -50,6 +51,41 @@ class FakeAirtable:
         assert len(matches) == 1
         matches[0]["fields"].update(dict(fields))
         return copy.deepcopy(matches[0])
+
+
+def test_airtable_http_list_requests_stable_field_ids_and_preserves_offset(monkeypatch):
+    seen_urls = []
+    payloads = [
+        b'{"records": [], "offset": "itrFixture/recFixture"}',
+        b'{"records": []}',
+    ]
+
+    class FakeResponse:
+        def __init__(self, body):
+            self.body = body
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def read(self):
+            return self.body
+
+    def fake_urlopen(request, timeout):
+        seen_urls.append(request.full_url)
+        return FakeResponse(payloads[len(seen_urls) - 1])
+
+    monkeypatch.setattr("bloom_engine.hosted_acceptance.urllib.request.urlopen", fake_urlopen)
+
+    client = AirtableHTTP(base_id="appFixture00000000", token="pat-fixture")
+    assert client.list_all(EVENTS_TABLE) == []
+
+    assert len(seen_urls) == 2
+    assert "returnFieldsByFieldId=true" in seen_urls[0]
+    assert "returnFieldsByFieldId=true" in seen_urls[1]
+    assert "offset=itrFixture%2FrecFixture" in seen_urls[1]
 
 
 def test_hosted_dry_run_writes_only_scribe_and_preserves_story_state():
