@@ -1,12 +1,12 @@
 openapi: 3.1.0
 info:
   title: BLOOM / Ama Read-Only Actions
-  version: 0.2.0
+  version: 0.2.1
   description: >-
     Private Ama action surface for BLOOM capability inspection and live read-only
     Current Scene runtime preview. No persistence or canon mutation is exposed.
 servers:
-  - url: https://ama-runtime.onrender.com
+  - url: https://ama-runtime-preview.onrender.com
 paths:
   /v1/capabilities:
     get:
