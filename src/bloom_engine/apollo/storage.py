@@ -67,6 +67,8 @@ class AirtableVisualAssetStore:
             return json.loads(response.read().decode("utf-8"))
 
     def _create_candidate_record(self, job: CompiledVisualJob, rendered: RenderedVisual, iteration: int, parent_candidate_id: str | None) -> dict[str, Any]:
+        if not job.subject_record_id or not job.subject_record_id.startswith("rec"):
+            raise RuntimeError("MISSING_STABLE_SUBJECT_RECORD_LINK")
         asset_key = f"AH-VIS-GEN-{uuid.uuid4().hex[:16]}-{iteration}"
         parent_text = parent_candidate_id or "; ".join(ref.asset_key for ref in job.references)
         fields: dict[str, Any] = {
