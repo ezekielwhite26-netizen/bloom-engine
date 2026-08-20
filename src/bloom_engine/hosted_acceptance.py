@@ -62,8 +62,15 @@ class AirtableHTTP:
     ) -> dict[str, Any]:
         table = urllib.parse.quote(table_id, safe="")
         url = f"https://api.airtable.com/v0/{self.base_id}/{table}"
+        query: dict[str, str] = {}
+        if method == "GET":
+            # BLOOM stores stable field IDs in its runtime contracts. Airtable's Web API
+            # returns field names by default, so fail-safe readback requires this option.
+            query["returnFieldsByFieldId"] = "true"
         if offset:
-            url += "?" + urllib.parse.urlencode({"offset": offset})
+            query["offset"] = offset
+        if query:
+            url += "?" + urllib.parse.urlencode(query)
         body = None if payload is None else json.dumps(payload).encode("utf-8")
         request = urllib.request.Request(
             url,
