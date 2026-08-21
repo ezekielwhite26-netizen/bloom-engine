@@ -17,8 +17,10 @@ from bloom_engine.runtime.models import (
 )
 from bloom_engine.runtime.runner import RunnerDeps, RuntimeRunner
 from bloom_engine.runtime.manuscript_identity import install_alias_aware_manuscript_repository
+from bloom_engine.runtime.manuscript_discovery import install_manuscript_discovery_policy
 
 install_alias_aware_manuscript_repository()
+install_manuscript_discovery_policy()
 
 __all__ = [
     "AthenaDecision",
